@@ -1,0 +1,46 @@
+name: Golden Eval (manual)
+
+# Manual trigger only. This calls the real Anthropic API and costs money,
+# so it must never run on push or pull_request.
+on:
+  workflow_dispatch:
+    inputs:
+      eval_cases:
+        description: 'Comma-separated case ids to run, e.g. "id1,id2". Leave blank to run every case.'
+        required: false
+        default: ''
+      eval_runs:
+        description: 'Override runs per case, e.g. "1" for a cheap smoke run. Leave blank to use the default (5).'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: supplement-evaluator
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: supplement-evaluator/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run golden eval
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EVAL_CASES: ${{ inputs.eval_cases }}
+          EVAL_RUNS: ${{ inputs.eval_runs }}
+        run: npm run eval
