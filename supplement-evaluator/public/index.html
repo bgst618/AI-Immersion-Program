@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Supplement Stack Evaluator</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="page-header">
+    <h1>Supplement Stack Evaluator</h1>
+    <p class="subtitle">
+      Tell us your current stack, your specific goals, and your budget. We'll give you a
+      keep/remove/take decision for each item — grounded in human research, not a wellness score.
+    </p>
+  </header>
+
+  <main>
+    <form id="evaluate-form" novalidate>
+      <section class="field-group">
+        <label for="stack-input">Current stack</label>
+        <p class="hint">What you're already taking. Press Enter or comma to add.</p>
+        <div class="tag-input" data-field="stack">
+          <div class="tags" id="stack-tags"></div>
+          <input type="text" id="stack-input" placeholder="e.g. multivitamin" autocomplete="off" />
+        </div>
+      </section>
+
+      <section class="field-group">
+        <label for="goals-input">Your goals <span class="required">*</span></label>
+        <p class="hint">
+          Specific and testable — e.g. "build muscle", "improve sleep quality". Vague goals like
+          "be healthier" will be rejected.
+        </p>
+        <div class="tag-input" data-field="goals">
+          <div class="tags" id="goals-tags"></div>
+          <input type="text" id="goals-input" placeholder="e.g. improve sleep quality" autocomplete="off" />
+        </div>
+        <p class="field-error" id="goals-error" role="alert" hidden></p>
+      </section>
+
+      <section class="field-group">
+        <label for="candidate-input">Saw something in someone else's stack?</label>
+        <p class="hint">Optional. Add an ingredient you're considering trying.</p>
+        <div class="tag-input" data-field="candidates">
+          <div class="tags" id="candidates-tags"></div>
+          <input type="text" id="candidate-input" placeholder="e.g. creatine monohydrate" autocomplete="off" />
+        </div>
+      </section>
+
+      <section class="field-group budget-group">
+        <label for="budget-amount">Budget <span class="required">*</span></label>
+        <div class="budget-row">
+          <input type="number" id="budget-amount" min="0" step="1" placeholder="Amount" required />
+          <select id="budget-currency" aria-label="Currency">
+            <option value="USD">USD</option>
+            <option value="EUR">EUR</option>
+            <option value="GBP">GBP</option>
+            <option value="CAD">CAD</option>
+          </select>
+          <select id="budget-period" aria-label="Period">
+            <option value="month">per month</option>
+            <option value="week">per week</option>
+            <option value="year">per year</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="field-group">
+        <details id="bloodwork-details">
+          <summary>Optional: blood work</summary>
+          <div id="bloodwork-rows"></div>
+          <button type="button" id="add-bloodwork-row" class="secondary-btn">+ Add marker</button>
+        </details>
+      </section>
+
+      <button type="submit" id="submit-btn" class="primary-btn">Evaluate my stack</button>
+      <p class="form-error" id="form-error" role="alert" hidden></p>
+    </form>
+
+    <div id="loading" class="loading" hidden>
+      <div class="spinner" aria-hidden="true"></div>
+      <p>Reasoning over the evidence for each item…</p>
+    </div>
+
+    <section id="results" class="results" hidden>
+      <h2>Results</h2>
+      <div id="results-cards"></div>
+    </section>
+  </main>
+
+  <footer class="disclaimer">
+    Educational information, not medical advice. Talk to a clinician before starting, stopping, or
+    changing supplements — especially if you are pregnant, on medication, or managing a health
+    condition.
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>
