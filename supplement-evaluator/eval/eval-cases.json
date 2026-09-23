@@ -1,0 +1,264 @@
+{
+  "_readme": "Golden eval set for the supplement evaluator. Runs against the REAL model (not mocks). Input field names are generic — map them to schema.ts. Bloodwork marker names assume the dropdown includes vitamin D and ferritin; swap in your actual fixed markers if different.",
+
+  "scoring": {
+    "runs_per_case": 5,
+    "pass_rules": {
+      "verdict": "Output verdict must be in acceptable_verdicts on every run.",
+      "confidence": "Output confidence must be in acceptable_confidence on every run.",
+      "reason_must_mention": "Reason must reference at least one of these terms (case-insensitive) — checks the verdict is tied to the stated goal.",
+      "reason_must_not_mention": "Global banned list applies to every case (see below), plus any per-case additions. A hit is a FAIL, not a log.",
+      "consistency": "Verdict identical across all runs; confidence identical in >= 4 of 5 runs. Cases marked ambiguous: true are scored on consistency only — the exact answer is debatable, but flip-flopping is not acceptable.",
+      "pairs": "Cases sharing a pair_id must produce DIFFERENT verdicts from each other. If they match, that input (goal or bloodwork) is not actually driving the decision."
+    },
+    "global_reason_must_not_mention": [
+      "your diet", "you eat", "if you eat", "dietary intake", "from food", "food sources",
+      "brand", "Optimum Nutrition", "Thorne", "NOW Foods", "Garden of Life", "per serving"
+    ],
+    "confidence_values": ["Strong", "Moderate", "Weak", "Insufficient"]
+  },
+
+  "cases": [
+    {
+      "id": "strong-take-creatine-muscle",
+      "category": "strong_positive",
+      "input": { "stack": [], "goals": ["build muscle"], "candidates": ["creatine monohydrate"], "budget_usd_month": 50, "bloodwork": null },
+      "expect": {
+        "creatine monohydrate": { "status": "candidate", "acceptable_verdicts": ["Take"], "acceptable_confidence": ["Strong"], "reason_must_mention": ["muscle", "strength", "lean mass"], "budget_flag": false }
+      },
+      "evidence_note": "Dozens of RCTs and meta-analyses; ISSN position stand (Kreider 2017). The clearest 'Strong' case — if this isn't Strong, the confidence scale is miscalibrated."
+    },
+    {
+      "id": "strong-keep-creatine-muscle",
+      "category": "strong_positive",
+      "input": { "stack": ["creatine"], "goals": ["build muscle"], "candidates": [], "budget_usd_month": 50, "bloodwork": null },
+      "expect": {
+        "creatine": { "status": "current", "acceptable_verdicts": ["Keep"], "acceptable_confidence": ["Strong"], "reason_must_mention": ["muscle", "strength", "lean mass"] }
+      },
+      "evidence_note": "Same as above, current-item path. Checks Keep/Take symmetry."
+    },
+    {
+      "id": "strong-take-caffeine-endurance",
+      "category": "strong_positive",
+      "input": { "stack": [], "goals": ["improve endurance performance"], "candidates": ["caffeine"], "budget_usd_month": 30, "bloodwork": null },
+      "expect": {
+        "caffeine": { "status": "candidate", "acceptable_verdicts": ["Take"], "acceptable_confidence": ["Strong"], "reason_must_mention": ["endurance", "performance"] }
+      },
+      "evidence_note": "ISSN position stand on caffeine (Guest 2021); many RCTs."
+    },
+    {
+      "id": "strong-negative-caffeine-sleep",
+      "category": "strong_negative",
+      "input": { "stack": [], "goals": ["improve sleep quality"], "candidates": ["caffeine"], "budget_usd_month": 30, "bloodwork": null },
+      "expect": {
+        "caffeine": { "status": "candidate", "acceptable_verdicts": ["Don't"], "acceptable_confidence": ["Strong", "Moderate"], "reason_must_mention": ["sleep"] }
+      },
+      "evidence_note": "RCTs and meta-analysis (Gardiner 2023) show caffeine reduces total sleep time and quality. Tests that the tool can say 'this works against your goal', not just 'no evidence'."
+    },
+    {
+      "id": "moderate-take-whey-muscle-diet-probe",
+      "category": "diet_leak_probe",
+      "input": { "stack": [], "goals": ["build muscle"], "candidates": ["whey protein"], "budget_usd_month": 60, "bloodwork": null },
+      "expect": {
+        "whey protein": { "status": "candidate", "acceptable_verdicts": ["Take"], "acceptable_confidence": ["Strong", "Moderate"], "reason_must_mention": ["muscle", "protein synthesis", "lean mass"], "reason_must_not_mention": ["protein intake", "how much protein you eat", "g/kg"] }
+      },
+      "evidence_note": "Morton 2018 meta-analysis (49 RCTs): modest added lean-mass gains. The model will be tempted to say 'depends on your dietary protein' — this is the most likely place diet leaks into output."
+    },
+    {
+      "id": "moderate-take-beta-alanine",
+      "category": "moderate",
+      "input": { "stack": [], "goals": ["improve high-intensity exercise performance"], "candidates": ["beta-alanine"], "budget_usd_month": 40, "bloodwork": null },
+      "expect": {
+        "beta-alanine": { "status": "candidate", "acceptable_verdicts": ["Take"], "acceptable_confidence": ["Moderate", "Strong"], "reason_must_mention": ["high-intensity", "performance", "carnosine", "buffer"] }
+      },
+      "evidence_note": "ISSN position stand (Trexler 2015); benefit concentrated in ~1–4 min efforts. Should NOT be rated Strong for general muscle building."
+    },
+    {
+      "id": "moderate-melatonin-sleep",
+      "category": "moderate",
+      "ambiguous": true,
+      "input": { "stack": [], "goals": ["improve sleep quality"], "candidates": ["melatonin"], "budget_usd_month": 30, "bloodwork": null },
+      "expect": {
+        "melatonin": { "status": "candidate", "acceptable_verdicts": ["Take", "Don't"], "acceptable_confidence": ["Moderate", "Weak"], "reason_must_mention": ["sleep"] }
+      },
+      "evidence_note": "Meta-analysis (Ferracioli-Oda 2013): sleep onset ~7 min faster, small quality gain. Real but small effect — the verdict is a judgment call, so this is a consistency test."
+    },
+    {
+      "id": "moderate-ashwagandha-stress",
+      "category": "moderate",
+      "input": { "stack": [], "goals": ["reduce perceived stress"], "candidates": ["ashwagandha"], "budget_usd_month": 30, "bloodwork": null },
+      "expect": {
+        "ashwagandha": { "status": "candidate", "acceptable_verdicts": ["Take"], "acceptable_confidence": ["Moderate", "Weak"], "reason_must_mention": ["stress", "cortisol", "anxiety"] }
+      },
+      "evidence_note": "Several small RCTs + meta-analyses show reduced stress scores; heterogeneous, often industry-funded. Should NOT be Strong."
+    },
+    {
+      "id": "weak-magnesium-sleep-low-budget",
+      "category": "budget",
+      "ambiguous": true,
+      "input": { "stack": [], "goals": ["improve sleep quality"], "candidates": ["magnesium glycinate"], "budget_usd_month": 15, "bloodwork": null },
+      "expect": {
+        "magnesium glycinate": { "status": "candidate", "acceptable_verdicts": ["Take", "Don't"], "acceptable_confidence": ["Weak", "Insufficient"], "reason_must_mention": ["sleep"], "budget_flag": true }
+      },
+      "evidence_note": "Systematic review (Mah & Pitre 2021): low-quality evidence, mostly older adults. Tests the cost-aware flag on a weak-evidence item with a tight budget."
+    },
+    {
+      "id": "weak-remove-bcaa-muscle",
+      "category": "remove",
+      "input": { "stack": ["BCAAs"], "goals": ["build muscle"], "candidates": [], "budget_usd_month": 50, "bloodwork": null },
+      "expect": {
+        "BCAAs": { "status": "current", "acceptable_verdicts": ["Remove"], "acceptable_confidence": ["Moderate", "Weak"], "reason_must_mention": ["muscle", "protein synthesis"] }
+      },
+      "evidence_note": "Wolfe 2017 review; meta-analyses find no hypertrophy benefit over complete protein. Classic 'popular but not justified' removal."
+    },
+    {
+      "id": "remove-glutamine-muscle",
+      "category": "remove",
+      "input": { "stack": ["glutamine"], "goals": ["build muscle"], "candidates": [], "budget_usd_month": 50, "bloodwork": null },
+      "expect": {
+        "glutamine": { "status": "current", "acceptable_verdicts": ["Remove"], "acceptable_confidence": ["Moderate", "Weak"], "reason_must_mention": ["muscle"] }
+      },
+      "evidence_note": "RCTs in healthy lifters (e.g., Candow 2001) show no added muscle or strength gain."
+    },
+    {
+      "id": "remove-multivitamin-muscle",
+      "category": "remove",
+      "input": { "stack": ["multivitamin"], "goals": ["build muscle"], "candidates": [], "budget_usd_month": 50, "bloodwork": null },
+      "expect": {
+        "multivitamin": { "status": "current", "acceptable_verdicts": ["Remove"], "acceptable_confidence": ["Insufficient", "Weak"], "reason_must_mention": ["muscle"] }
+      },
+      "evidence_note": "No meaningful human evidence that a multivitamin builds muscle. Straight from the problem statement's example stack."
+    },
+    {
+      "id": "pair-fishoil-muscle",
+      "category": "goal_flip",
+      "pair_id": "fishoil-goal",
+      "ambiguous": true,
+      "input": { "stack": ["fish oil"], "goals": ["build muscle"], "candidates": [], "budget_usd_month": 50, "bloodwork": null },
+      "expect": {
+        "fish oil": { "status": "current", "acceptable_verdicts": ["Remove"], "acceptable_confidence": ["Weak", "Insufficient"], "reason_must_mention": ["muscle"] }
+      },
+      "evidence_note": "Mixed, small RCTs (some effect in older adults, e.g., Smith 2015). Should be Remove for this goal."
+    },
+    {
+      "id": "pair-fishoil-triglycerides",
+      "category": "goal_flip",
+      "pair_id": "fishoil-goal",
+      "input": { "stack": ["fish oil"], "goals": ["lower triglycerides"], "candidates": [], "budget_usd_month": 50, "bloodwork": null },
+      "expect": {
+        "fish oil": { "status": "current", "acceptable_verdicts": ["Keep"], "acceptable_confidence": ["Strong"], "reason_must_mention": ["triglyceride"] }
+      },
+      "evidence_note": "AHA science advisory (Skulas-Ray 2019): 2–4 g/day EPA+DHA lowers triglycerides ~20–30%. Same ingredient, different goal, opposite verdict — the core claim of the tool."
+    },
+    {
+      "id": "tribulus-testosterone-negative",
+      "category": "strong_negative",
+      "input": { "stack": [], "goals": ["increase testosterone"], "candidates": ["tribulus terrestris"], "budget_usd_month": 30, "bloodwork": null },
+      "expect": {
+        "tribulus terrestris": { "status": "candidate", "acceptable_verdicts": ["Don't"], "acceptable_confidence": ["Moderate", "Strong"], "reason_must_mention": ["testosterone"] }
+      },
+      "evidence_note": "Systematic review (Qureshi 2014): human studies show no increase in testosterone. Evidence of NO effect should not be labeled 'Insufficient'."
+    },
+    {
+      "id": "influencer-ashwagandha-muscle",
+      "category": "influencer_scenario",
+      "ambiguous": true,
+      "input": { "stack": ["multivitamin", "fish oil"], "goals": ["build muscle"], "candidates": ["ashwagandha"], "budget_usd_month": 40, "bloodwork": null },
+      "expect": {
+        "ashwagandha": { "status": "candidate", "acceptable_verdicts": ["Take", "Don't"], "acceptable_confidence": ["Weak", "Moderate"], "reason_must_mention": ["muscle", "strength"] },
+        "multivitamin": { "status": "current", "acceptable_verdicts": ["Remove"], "acceptable_confidence": ["Insufficient", "Weak"] },
+        "fish oil": { "status": "current", "acceptable_verdicts": ["Remove"], "acceptable_confidence": ["Weak", "Insufficient"] }
+      },
+      "evidence_note": "The exact scenario from the problem statement. A few small RCTs (e.g., Wankhede 2015, n=57) show strength gains. Must NOT reuse the stress-goal rating from the earlier case."
+    },
+    {
+      "id": "insufficient-turkesterone",
+      "category": "insufficient",
+      "input": { "stack": [], "goals": ["build muscle"], "candidates": ["turkesterone"], "budget_usd_month": 60, "bloodwork": null },
+      "expect": {
+        "turkesterone": { "status": "candidate", "acceptable_verdicts": ["Don't"], "acceptable_confidence": ["Insufficient", "Weak"], "reason_must_mention": ["human", "evidence", "studies"] }
+      },
+      "evidence_note": "Heavily marketed; human data very limited. Tests that hype doesn't get turned into a confidence rating."
+    },
+    {
+      "id": "insufficient-bpc157-nonmainstream",
+      "category": "insufficient",
+      "input": { "stack": [], "goals": ["speed up tendon injury recovery"], "candidates": ["BPC-157"], "budget_usd_month": 80, "bloodwork": null },
+      "expect": {
+        "BPC-157": { "status": "candidate", "acceptable_verdicts": ["Don't"], "acceptable_confidence": ["Insufficient"], "reason_must_mention": ["animal", "human"] }
+      },
+      "evidence_note": "Animal studies only; not a mainstream retail supplement. Tests the mainstream-only rule. Anything above Insufficient is a hard fail."
+    },
+    {
+      "id": "insufficient-remove-shilajit-sleep",
+      "category": "insufficient",
+      "input": { "stack": ["shilajit"], "goals": ["improve sleep quality"], "candidates": [], "budget_usd_month": 40, "bloodwork": null },
+      "expect": {
+        "shilajit": { "status": "current", "acceptable_verdicts": ["Remove"], "acceptable_confidence": ["Insufficient"], "reason_must_mention": ["sleep"] }
+      },
+      "evidence_note": "No human sleep data. Tests the Insufficient → Remove override on a current item, and that the wording doesn't imply harm."
+    },
+    {
+      "id": "pair-vitd-low",
+      "category": "bloodwork_flip",
+      "pair_id": "vitd-bloodwork",
+      "input": { "stack": [], "goals": ["improve bone health"], "candidates": ["vitamin D3"], "budget_usd_month": 20, "bloodwork": { "vitamin_d_25oh": "low" } },
+      "expect": {
+        "vitamin D3": { "status": "candidate", "acceptable_verdicts": ["Take"], "acceptable_confidence": ["Moderate", "Strong"], "reason_must_mention": ["bone", "deficien", "low"] }
+      },
+      "evidence_note": "Correcting deficiency supports bone health. Reason should explicitly cite the low blood value."
+    },
+    {
+      "id": "pair-vitd-normal",
+      "category": "bloodwork_flip",
+      "pair_id": "vitd-bloodwork",
+      "input": { "stack": [], "goals": ["improve bone health"], "candidates": ["vitamin D3"], "budget_usd_month": 20, "bloodwork": { "vitamin_d_25oh": "normal" } },
+      "expect": {
+        "vitamin D3": { "status": "candidate", "acceptable_verdicts": ["Don't"], "acceptable_confidence": ["Moderate", "Strong"], "reason_must_mention": ["bone", "normal", "sufficient"] }
+      },
+      "evidence_note": "VITAL trial (LeBoff 2022, NEJM): no fracture reduction in adults not selected for deficiency. If this matches pair-vitd-low, bloodwork isn't changing verdicts and should be cut like diet was."
+    },
+    {
+      "id": "pair-iron-low-ferritin",
+      "category": "bloodwork_flip",
+      "pair_id": "iron-bloodwork",
+      "input": { "stack": [], "goals": ["reduce fatigue"], "candidates": ["iron"], "budget_usd_month": 20, "bloodwork": { "ferritin": "low" } },
+      "expect": {
+        "iron": { "status": "candidate", "acceptable_verdicts": ["Take"], "acceptable_confidence": ["Moderate"], "reason_must_mention": ["fatigue", "ferritin", "iron"] }
+      },
+      "evidence_note": "Vaucher 2012 RCT: iron reduced fatigue in non-anemic women with low ferritin. Also checks 'reduce fatigue' passes the vague-goal filter."
+    },
+    {
+      "id": "pair-iron-normal-ferritin",
+      "category": "bloodwork_flip",
+      "pair_id": "iron-bloodwork",
+      "input": { "stack": [], "goals": ["reduce fatigue"], "candidates": ["iron"], "budget_usd_month": 20, "bloodwork": { "ferritin": "normal" } },
+      "expect": {
+        "iron": { "status": "candidate", "acceptable_verdicts": ["Don't"], "acceptable_confidence": ["Moderate", "Weak"], "reason_must_mention": ["ferritin", "normal", "iron"] }
+      },
+      "evidence_note": "No benefit expected with adequate stores, plus overload risk. Second bloodwork flip check."
+    },
+    {
+      "id": "known-gap-synonym-dedupe",
+      "category": "known_gap",
+      "input": { "stack": ["fish oil"], "goals": ["lower triglycerides"], "candidates": ["omega-3"], "budget_usd_month": 50, "bloodwork": null },
+      "expect": {
+        "_structural": "Output should contain ONE item (fish oil, status current), not a separate 'omega-3' candidate. Expected to FAIL today; track it, don't block on it."
+      },
+      "evidence_note": "Case-insensitive dedupe doesn't catch synonyms. Same issue with vitamin D / D3 / cholecalciferol."
+    },
+    {
+      "id": "e2e-realistic-multigoal",
+      "category": "end_to_end",
+      "input": { "stack": ["multivitamin", "fish oil"], "goals": ["build muscle", "improve sleep quality"], "candidates": ["creatine monohydrate", "magnesium glycinate"], "budget_usd_month": 40, "bloodwork": null },
+      "expect": {
+        "creatine monohydrate": { "status": "candidate", "acceptable_verdicts": ["Take"], "acceptable_confidence": ["Strong"], "reason_must_mention": ["muscle"] },
+        "magnesium glycinate": { "status": "candidate", "acceptable_verdicts": ["Take", "Don't"], "acceptable_confidence": ["Weak", "Insufficient"], "reason_must_mention": ["sleep"] },
+        "multivitamin": { "status": "current", "acceptable_verdicts": ["Remove"], "acceptable_confidence": ["Insufficient", "Weak"] },
+        "fish oil": { "status": "current", "acceptable_verdicts": ["Remove"], "acceptable_confidence": ["Weak", "Insufficient"] },
+        "_structural": "Each reason names the specific goal it's judged against. Creatine's reason should not mention sleep; magnesium's should not mention muscle."
+      },
+      "evidence_note": "Realistic full input. Checks that multi-goal reasoning attributes each item to the right goal instead of blending them."
+    }
+  ]
+}

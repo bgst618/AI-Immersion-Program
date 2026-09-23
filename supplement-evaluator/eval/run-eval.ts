@@ -1,0 +1,450 @@
+// Golden eval runner. Hits the REAL Anthropic API (no mocks) — costs money and
+// takes a while. Intentionally kept out of `npm test` / vitest so it never
+// runs in CI. Usage: `npm run eval` (needs ANTHROPIC_API_KEY in the env or in
+// .dev.vars).
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { assembleReports } from "../src/assemble";
+import { ClaudeCallError, evaluateWithClaude } from "../src/claude";
+import { compileItems } from "../src/items";
+import {
+  IntakeSchema,
+  type BloodMarkerKey,
+  type BloodWorkEntry,
+  type Intake,
+  type ItemReport,
+} from "../src/schema";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// --- API key -----------------------------------------------------------
+
+function loadApiKey(): string {
+  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
+  try {
+    const devVars = readFileSync(join(__dirname, "..", ".dev.vars"), "utf-8");
+    for (const line of devVars.split("\n")) {
+      const match = line.match(/^ANTHROPIC_API_KEY\s*=\s*(.+)$/);
+      if (match) return match[1]!.trim().replace(/^["']|["']$/g, "");
+    }
+  } catch {
+    // no .dev.vars, fall through
+  }
+  console.error("ANTHROPIC_API_KEY not set (checked process.env and .dev.vars). Aborting.");
+  process.exit(1);
+}
+
+// --- eval-cases.json types ----------------------------------------------
+
+interface RawItemExpectation {
+  status?: "current" | "candidate";
+  acceptable_verdicts?: string[];
+  acceptable_confidence?: string[];
+  reason_must_mention?: string[];
+  reason_must_not_mention?: string[];
+  budget_flag?: boolean;
+}
+
+interface RawCase {
+  id: string;
+  category: string;
+  pair_id?: string;
+  ambiguous?: boolean;
+  input: {
+    stack: string[];
+    goals: string[];
+    candidates: string[];
+    budget_usd_month: number;
+    bloodwork: Record<string, string> | null;
+  };
+  expect: Record<string, RawItemExpectation | string>; // "_structural" maps to a string
+  evidence_note?: string;
+}
+
+interface EvalFile {
+  scoring: {
+    runs_per_case: number;
+    global_reason_must_not_mention: string[];
+    confidence_values: string[];
+  };
+  cases: RawCase[];
+}
+
+const evalFile: EvalFile = JSON.parse(readFileSync(join(__dirname, "eval-cases.json"), "utf-8"));
+
+// --- Bloodwork mapping: eval-cases.json generic markers -> schema.ts dropdown ----
+//
+// schema.ts BLOOD_MARKERS keys are: vitamin_d, vitamin_b12, ferritin, omega3_index.
+// eval-cases.json uses "vitamin_d_25oh" (not "vitamin_d") and qualitative
+// "low"/"normal" strings instead of a numeric value. Mapped below; anything
+// unmapped is skipped with a warning so a future case can't silently no-op.
+
+const BLOODWORK_KEY_MAP: Record<string, BloodMarkerKey> = {
+  vitamin_d_25oh: "vitamin_d",
+  ferritin: "ferritin",
+};
+
+const QUALITATIVE_VALUE_MAP: Record<BloodMarkerKey, Record<string, number>> = {
+  vitamin_d: { low: 15, normal: 40 }, // ng/mL; deficient <20, sufficient ~30-100
+  ferritin: { low: 15, normal: 80 }, // ng/mL; representative low vs. mid-normal
+  vitamin_b12: { low: 150, normal: 500 }, // pg/mL; unused by current cases
+  omega3_index: { low: 3, normal: 6 }, // %; unused by current cases
+};
+
+const unmappedMarkersSeen = new Set<string>();
+
+function mapBloodwork(bloodwork: Record<string, string> | null): BloodWorkEntry[] {
+  if (!bloodwork) return [];
+  const entries: BloodWorkEntry[] = [];
+  for (const [rawKey, qualitative] of Object.entries(bloodwork)) {
+    const markerKey = BLOODWORK_KEY_MAP[rawKey];
+    if (!markerKey) {
+      unmappedMarkersSeen.add(rawKey);
+      continue;
+    }
+    const value = QUALITATIVE_VALUE_MAP[markerKey]?.[qualitative];
+    if (value === undefined) {
+      console.warn(`eval-cases.json: unrecognized bloodwork value "${qualitative}" for marker "${rawKey}"; skipping.`);
+      continue;
+    }
+    entries.push({ marker: markerKey, value });
+  }
+  return entries;
+}
+
+function mapInput(raw: RawCase["input"]): Intake {
+  return IntakeSchema.parse({
+    stack: raw.stack ?? [],
+    goals: raw.goals ?? [],
+    candidates: raw.candidates ?? [],
+    budget: { amount: raw.budget_usd_month, period: "month", currency: "USD" },
+    bloodWork: mapBloodwork(raw.bloodwork ?? null),
+  });
+}
+
+// --- Concurrency-limited task runner -------------------------------------
+
+const CONCURRENCY = Number(process.env.EVAL_CONCURRENCY) || 5;
+
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i]!, i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+async function withTransientRetry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (!(error instanceof ClaudeCallError) || attempt === retries) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
+    }
+  }
+  throw lastError;
+}
+
+// --- Running cases ---------------------------------------------------------
+
+type RunResult = { ok: true; items: ItemReport[] } | { ok: false; error: string };
+
+interface CaseRunData {
+  case: RawCase;
+  runs: RunResult[];
+}
+
+interface Task {
+  caseIndex: number;
+  intake: Intake;
+  items: ReturnType<typeof compileItems>;
+}
+
+async function runOne(task: Task, apiKey: string): Promise<RunResult> {
+  try {
+    const output = await withTransientRetry(() => evaluateWithClaude(apiKey, task.intake, task.items));
+    const evaluation = assembleReports(task.items, output);
+    return { ok: true, items: evaluation.items };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// Runs every (case, repetition) as one flat pool so CONCURRENCY caps total
+// in-flight requests across the whole suite, not per case.
+async function runAllCases(cases: RawCase[], apiKey: string): Promise<CaseRunData[]> {
+  const tasks: Task[] = cases.map((c, caseIndex) => {
+    const intake = mapInput(c.input);
+    return { caseIndex, intake, items: compileItems(intake.stack, intake.candidates) };
+  });
+
+  const flatRuns: { caseIndex: number; runIndex: number }[] = [];
+  for (const task of tasks) {
+    for (let runIndex = 0; runIndex < evalFile.scoring.runs_per_case; runIndex++) {
+      flatRuns.push({ caseIndex: task.caseIndex, runIndex });
+    }
+  }
+
+  const flatResults = await mapWithConcurrency(flatRuns, CONCURRENCY, async ({ caseIndex }) => runOne(tasks[caseIndex]!, apiKey));
+
+  const runsByCase: RunResult[][] = cases.map(() => []);
+  flatRuns.forEach((r, i) => runsByCase[r.caseIndex]!.push(flatResults[i]!));
+
+  return cases.map((rawCase, caseIndex) => ({ case: rawCase, runs: runsByCase[caseIndex]! }));
+}
+
+// --- Scoring -----------------------------------------------------------
+
+function normalizeConfidence(c: string): string {
+  return c === "Insufficient evidence to rate" ? "Insufficient" : c;
+}
+
+interface ItemScoreRow {
+  caseId: string;
+  category: string;
+  ambiguous: boolean;
+  itemName: string;
+  verdicts: (string | null)[];
+  confidences: (string | null)[];
+  pass: boolean;
+  failReasons: string[];
+}
+
+function findItemReport(items: ItemReport[], name: string): ItemReport | undefined {
+  return items.find((i) => i.name.toLowerCase() === name.toLowerCase());
+}
+
+function scoreItem(
+  caseData: CaseRunData,
+  itemName: string,
+  expectation: RawItemExpectation,
+  globalBanned: string[],
+): ItemScoreRow {
+  const failReasons: string[] = [];
+  const verdicts: (string | null)[] = [];
+  const confidences: (string | null)[] = [];
+  const banned = [...globalBanned, ...(expectation.reason_must_not_mention ?? [])];
+
+  for (const run of caseData.runs) {
+    if (!run.ok) {
+      verdicts.push(null);
+      confidences.push(null);
+      failReasons.push(`run_error: ${run.error}`);
+      continue;
+    }
+    const report = findItemReport(run.items, itemName);
+    if (!report) {
+      verdicts.push(null);
+      confidences.push(null);
+      failReasons.push(`missing_item`);
+      continue;
+    }
+    verdicts.push(report.verdict);
+    confidences.push(normalizeConfidence(report.confidence));
+
+    if (expectation.status && report.status !== expectation.status) {
+      failReasons.push(`status_mismatch:${report.status}`);
+    }
+    if (expectation.acceptable_verdicts && !expectation.acceptable_verdicts.includes(report.verdict)) {
+      failReasons.push(`verdict:${report.verdict}`);
+    }
+    const normConf = normalizeConfidence(report.confidence);
+    if (expectation.acceptable_confidence && !expectation.acceptable_confidence.includes(normConf)) {
+      failReasons.push(`confidence:${normConf}`);
+    }
+    if (expectation.reason_must_mention) {
+      const lower = report.reason.toLowerCase();
+      const hit = expectation.reason_must_mention.some((term) => lower.includes(term.toLowerCase()));
+      if (!hit) failReasons.push(`reason_missing_mention`);
+    }
+    for (const phrase of banned) {
+      if (report.reason.toLowerCase().includes(phrase.toLowerCase())) {
+        failReasons.push(`banned_phrase:"${phrase}"`);
+      }
+    }
+  }
+
+  // Consistency: verdict identical across all runs; confidence identical in >= 4 of 5.
+  const nonNullVerdicts = verdicts.filter((v): v is string => v !== null);
+  const verdictConsistent = nonNullVerdicts.length === verdicts.length && new Set(nonNullVerdicts).size <= 1;
+  if (!verdictConsistent) failReasons.push("consistency:verdict_varies");
+
+  const nonNullConfidences = confidences.filter((c): c is string => c !== null);
+  if (nonNullConfidences.length > 0) {
+    const counts = new Map<string, number>();
+    for (const c of nonNullConfidences) counts.set(c, (counts.get(c) ?? 0) + 1);
+    const maxAgreement = Math.max(...counts.values());
+    if (maxAgreement < 4) failReasons.push("consistency:confidence_varies");
+  }
+
+  return {
+    caseId: caseData.case.id,
+    category: caseData.case.category + (caseData.case.ambiguous ? " (ambiguous)" : ""),
+    ambiguous: !!caseData.case.ambiguous,
+    itemName,
+    verdicts,
+    confidences,
+    pass: failReasons.length === 0,
+    failReasons,
+  };
+}
+
+function dominantVerdict(verdicts: (string | null)[]): string | null {
+  const counts = new Map<string, number>();
+  for (const v of verdicts) {
+    if (v === null) continue;
+    counts.set(v, (counts.get(v) ?? 0) + 1);
+  }
+  let best: string | null = null;
+  let bestCount = -1;
+  for (const [v, c] of counts) {
+    if (c > bestCount) {
+      best = v;
+      bestCount = c;
+    }
+  }
+  return best;
+}
+
+function summarizeList(values: (string | null)[]): string {
+  return values.map((v) => v ?? "ERR").join(",");
+}
+
+// --- Main ----------------------------------------------------------------
+
+async function main() {
+  const apiKey = loadApiKey();
+
+  // Touch mapBloodwork eagerly for every case so we surface unmapped markers
+  // before running anything expensive.
+  for (const c of evalFile.cases) mapBloodwork(c.input.bloodwork ?? null);
+  if (unmappedMarkersSeen.size > 0) {
+    console.warn(
+      `\nWARNING: eval-cases.json uses bloodwork marker key(s) not in schema.ts BLOOD_MARKERS / BLOODWORK_KEY_MAP: ${[...unmappedMarkersSeen].join(", ")}. Those entries were dropped from the intake sent to the model.\n`,
+    );
+  }
+
+  console.log(`Running ${evalFile.cases.length} cases x ${evalFile.scoring.runs_per_case} runs against the real API (concurrency=${CONCURRENCY})...\n`);
+
+  const allCaseData = await runAllCases(evalFile.cases, apiKey);
+
+  const itemRows: ItemScoreRow[] = [];
+  const structuralNotes: { caseId: string; note: string; actual: string }[] = [];
+
+  for (const caseData of allCaseData) {
+    for (const [key, expectation] of Object.entries(caseData.case.expect)) {
+      if (key === "_structural") {
+        const firstOk = caseData.runs.find((r): r is { ok: true; items: ItemReport[] } => r.ok);
+        const actual = firstOk ? firstOk.items.map((i) => `${i.name} (${i.status})`).join("; ") : "no successful run";
+        structuralNotes.push({ caseId: caseData.case.id, note: expectation as string, actual });
+        continue;
+      }
+      itemRows.push(scoreItem(caseData, key, expectation as RawItemExpectation, evalFile.scoring.global_reason_must_not_mention));
+    }
+  }
+
+  console.log("=== Per-item results ===");
+  console.table(
+    itemRows.map((r) => ({
+      case: r.caseId,
+      item: r.itemName,
+      category: r.category,
+      verdicts: summarizeList(r.verdicts),
+      confidences: summarizeList(r.confidences),
+      pass: r.pass ? "PASS" : "FAIL",
+      failReasons: r.failReasons.join(" | "),
+    })),
+  );
+
+  console.log("\n=== Case-level summary ===");
+  const caseIds = [...new Set(itemRows.map((r) => r.caseId))];
+  const caseLevel = caseIds.map((id) => {
+    const rows = itemRows.filter((r) => r.caseId === id);
+    const pass = rows.every((r) => r.pass);
+    return { case: id, items: rows.length, result: pass ? "PASS" : "FAIL" };
+  });
+  for (const structural of structuralNotes) {
+    if (!caseLevel.some((c) => c.case === structural.caseId)) {
+      caseLevel.push({ case: structural.caseId, items: 0, result: "INFO (structural only)" });
+    }
+  }
+  console.table(caseLevel);
+
+  if (structuralNotes.length > 0) {
+    console.log("\n=== Structural notes (informational, not scored) ===");
+    for (const s of structuralNotes) {
+      console.log(`- ${s.caseId}: ${s.note}\n  actual: ${s.actual}`);
+    }
+  }
+
+  console.log("\n=== Pair checks (cases sharing pair_id must differ) ===");
+  const pairGroups = new Map<string, RawCase[]>();
+  for (const { case: c } of allCaseData) {
+    if (!c.pair_id) continue;
+    pairGroups.set(c.pair_id, [...(pairGroups.get(c.pair_id) ?? []), c]);
+  }
+  const pairResults: { pairId: string; cases: string; dominantVerdicts: string; result: string }[] = [];
+  for (const [pairId, cases] of pairGroups) {
+    const dominants = cases.map((c) => {
+      const caseData = allCaseData.find((d) => d.case.id === c.id)!;
+      const itemKey = Object.keys(c.expect).find((k) => k !== "_structural");
+      const verdicts = itemKey ? itemRows.find((r) => r.caseId === c.id && r.itemName === itemKey)?.verdicts ?? [] : [];
+      return dominantVerdict(verdicts);
+    });
+    const distinct = new Set(dominants.filter((d) => d !== null));
+    const pass = distinct.size > 1;
+    pairResults.push({
+      pairId,
+      cases: cases.map((c) => c.id).join(" vs "),
+      dominantVerdicts: dominants.map((d) => d ?? "ERR").join(" vs "),
+      result: pass ? "PASS" : "FAIL",
+    });
+  }
+  console.table(pairResults);
+
+  console.log("\n=== Consistency-specific failures ===");
+  const consistencyFailures = itemRows.filter((r) => r.failReasons.some((f) => f.startsWith("consistency:")));
+  if (consistencyFailures.length === 0) {
+    console.log("None.");
+  } else {
+    console.table(
+      consistencyFailures.map((r) => ({
+        case: r.caseId,
+        item: r.itemName,
+        verdicts: summarizeList(r.verdicts),
+        confidences: summarizeList(r.confidences),
+        issue: r.failReasons.filter((f) => f.startsWith("consistency:")).join(", "),
+      })),
+    );
+  }
+
+  const totalCases = caseLevel.length;
+  const passedCases = caseLevel.filter((c) => c.result === "PASS").length;
+  const failedCases = caseLevel.filter((c) => c.result === "FAIL").length;
+  const infoCases = caseLevel.filter((c) => c.result.startsWith("INFO")).length;
+  const pairsFailed = pairResults.filter((p) => p.result === "FAIL").length;
+  const runErrors = allCaseData.flatMap((c) => c.runs.filter((r) => !r.ok)).length;
+
+  console.log("\n=== Summary ===");
+  console.log(`Cases: ${totalCases} (${passedCases} pass, ${failedCases} fail, ${infoCases} informational)`);
+  console.log(`Pairs: ${pairResults.length} (${pairResults.length - pairsFailed} pass, ${pairsFailed} fail)`);
+  console.log(`Consistency-specific failures: ${consistencyFailures.length}`);
+  console.log(`Run-level API/validation errors: ${runErrors}`);
+
+  process.exitCode = failedCases > 0 || pairsFailed > 0 ? 1 : 0;
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
