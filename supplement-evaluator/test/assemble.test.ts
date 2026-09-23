@@ -11,6 +11,7 @@ function item(overrides: Partial<ClaudeItemOutput> = {}): ClaudeItemOutput {
     goalsAddressed: ["build muscle"],
     verdict: "Take",
     confidence: "Strong",
+    budgetFlag: false,
     reason: "Consistently improves strength gains from resistance training toward 'build muscle'.",
     mechanism: "Increases phosphocreatine stores in muscle, supporting ATP regeneration during high-intensity effort.",
     ...overrides,
@@ -105,5 +106,47 @@ describe("assembleReports", () => {
     const output: ClaudeToolOutput = { items: [item()] };
     const result = assembleReports(compiled, output);
     expect(result.disclaimer).toMatch(/not medical advice/i);
+  });
+
+  it("passes through budgetFlag=true when no override fires", () => {
+    const compiled: CompiledItem[] = [{ name: "magnesium glycinate", status: "candidate" }];
+    const output: ClaudeToolOutput = {
+      items: [
+        item({
+          name: "magnesium glycinate",
+          confidence: "Moderate",
+          verdict: "Take",
+          budgetFlag: true,
+        }),
+      ],
+    };
+    const result = assembleReports(compiled, output);
+    expect(result.items[0]!.budgetFlag).toBe(true);
+  });
+
+  it("clears budgetFlag when the niche-candidate override fires", () => {
+    const compiled: CompiledItem[] = [{ name: "obscure compound", status: "candidate" }];
+    const output: ClaudeToolOutput = {
+      items: [
+        item({
+          name: "obscure compound",
+          isMainstreamHumanTested: false,
+          verdict: "Take",
+          confidence: "Weak",
+          budgetFlag: true,
+        }),
+      ],
+    };
+    const result = assembleReports(compiled, output);
+    expect(result.items[0]!.budgetFlag).toBe(false);
+  });
+
+  it("clears budgetFlag when the insufficient-evidence override fires", () => {
+    const compiled: CompiledItem[] = [{ name: "creatine monohydrate", status: "candidate" }];
+    const output: ClaudeToolOutput = {
+      items: [item({ confidence: "Insufficient evidence to rate", verdict: "Take", budgetFlag: true })],
+    };
+    const result = assembleReports(compiled, output);
+    expect(result.items[0]!.budgetFlag).toBe(false);
   });
 });

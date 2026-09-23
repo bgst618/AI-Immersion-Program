@@ -302,6 +302,7 @@ summary {
   border-radius: 999px;
   padding: 0.2rem 0.65rem;
   margin-bottom: 0.75rem;
+  margin-right: 0.4rem;
 }
 
 .badge.Strong {
@@ -322,6 +323,11 @@ summary {
 .badge.Insufficient {
   background: rgba(138, 146, 166, 0.15);
   color: var(--insufficient);
+}
+
+.badge.budget-flag {
+  background: rgba(91, 140, 255, 0.15);
+  color: var(--accent-strong);
 }
 
 .card p {

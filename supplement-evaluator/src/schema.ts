@@ -85,6 +85,7 @@ export const ClaudeItemOutputSchema = z
     goalsAddressed: z.array(z.string()),
     verdict: z.enum(["Keep", "Remove", "Take", "Don't"]),
     confidence: ConfidenceSchema,
+    budgetFlag: z.boolean(),
     reason: z.string().min(1).max(1000),
     mechanism: z.string().min(1).max(1000),
   })
@@ -107,6 +108,7 @@ export const ItemReportSchema = z.object({
   confidence: ConfidenceSchema,
   goalsAddressed: z.array(z.string()),
   evidenceType: z.string(),
+  budgetFlag: z.boolean(),
   reason: z.string(),
   mechanism: z.string(),
 });

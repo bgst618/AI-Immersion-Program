@@ -229,13 +229,6 @@ function findItemReport(items: ItemReport[], name: string): ItemReport | undefin
   return items.find((i) => i.name.toLowerCase() === name.toLowerCase());
 }
 
-// Heuristic for "the reason cites budget as a factor" — the system prompt
-// (claude.ts, budget rule) requires the reason to say so explicitly when
-// budget drove the verdict.
-function reasonCitesBudget(reason: string): boolean {
-  return /\bbudget\b/i.test(reason);
-}
-
 function scoreItem(
   caseData: CaseRunData,
   itemName: string,
@@ -280,11 +273,8 @@ function scoreItem(
       const hit = expectation.reason_must_mention.some((term) => lower.includes(term.toLowerCase()));
       if (!hit) failReasons.push(`reason_missing_mention`);
     }
-    if (expectation.budget_flag !== undefined) {
-      const cited = reasonCitesBudget(report.reason);
-      if (cited !== expectation.budget_flag) {
-        failReasons.push(`budget_flag_mismatch:expected=${expectation.budget_flag},actual=${cited}`);
-      }
+    if (expectation.budget_flag !== undefined && report.budgetFlag !== expectation.budget_flag) {
+      failReasons.push(`budget_flag_mismatch:expected=${expectation.budget_flag},actual=${report.budgetFlag}`);
     }
     for (const phrase of banned) {
       if (report.reason.toLowerCase().includes(phrase.toLowerCase())) {

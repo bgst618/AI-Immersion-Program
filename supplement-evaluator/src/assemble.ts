@@ -90,21 +90,24 @@ function flagContentGuard(item: ClaudeItemOutput): void {
 
 // Step 7 (part 2): deterministic overrides the model doesn't get to negotiate.
 function applyOverrides(item: ClaudeItemOutput): ClaudeItemOutput {
-  let { verdict, confidence } = item;
+  let { verdict, confidence, budgetFlag } = item;
 
   // Niche candidate rule: no mainstream human testing -> forced Don't / Insufficient.
+  // The evidence gap is now the deciding factor, not budget, even if the model thought otherwise.
   if (item.status === "candidate" && !item.isMainstreamHumanTested) {
     verdict = "Don't";
     confidence = "Insufficient evidence to rate";
+    budgetFlag = false;
   }
 
   // Open Decision #2: Insufficient evidence always resolves to Remove/Don't —
-  // "no support found", not "proven harmful".
+  // "no support found", not "proven harmful". Same reasoning: evidence, not budget, decided this.
   if (confidence === "Insufficient evidence to rate") {
     verdict = item.status === "current" ? "Remove" : "Don't";
+    budgetFlag = false;
   }
 
-  return { ...item, verdict, confidence };
+  return { ...item, verdict, confidence, budgetFlag };
 }
 
 export function assembleReports(compiledItems: CompiledItem[], output: ClaudeToolOutput): EvaluationResponse {
@@ -121,6 +124,7 @@ export function assembleReports(compiledItems: CompiledItem[], output: ClaudeToo
       confidence: corrected.confidence,
       goalsAddressed: corrected.goalsAddressed,
       evidenceType: corrected.evidenceType,
+      budgetFlag: corrected.budgetFlag,
       reason: corrected.reason,
       mechanism: corrected.mechanism,
     };

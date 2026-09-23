@@ -30,6 +30,7 @@ const validItem = {
   goalsAddressed: ["build muscle"],
   verdict: "Take",
   confidence: "Strong",
+  budgetFlag: false,
   reason: "Well supported for build muscle by many human RCTs.",
   mechanism: "Raises phosphocreatine stores, supporting ATP regeneration during resistance training.",
 };

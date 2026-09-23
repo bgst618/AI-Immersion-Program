@@ -193,6 +193,14 @@ function renderResults(evaluation) {
     badge.className = `badge ${confidenceClass}`;
     badge.textContent = item.confidence;
 
+    const badgeRow = [badge];
+    if (item.budgetFlag) {
+      const budgetBadge = document.createElement("span");
+      budgetBadge.className = "badge budget-flag";
+      budgetBadge.textContent = "Budget-limited";
+      badgeRow.push(budgetBadge);
+    }
+
     const reasonLabel = document.createElement("p");
     reasonLabel.className = "label";
     reasonLabel.textContent = "Why";
@@ -205,7 +213,7 @@ function renderResults(evaluation) {
     const mechanism = document.createElement("p");
     mechanism.textContent = item.mechanism;
 
-    card.append(header, verdict, badge, reasonLabel, reason, mechanismLabel, mechanism);
+    card.append(header, verdict, ...badgeRow, reasonLabel, reason, mechanismLabel, mechanism);
     resultsCards.appendChild(card);
   }
 

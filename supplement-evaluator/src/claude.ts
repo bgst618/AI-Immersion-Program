@@ -41,6 +41,11 @@ const TOOL_DEFINITION = {
               type: "string",
               enum: ["Strong", "Moderate", "Weak", "Insufficient evidence to rate"],
             },
+            budgetFlag: {
+              type: "boolean",
+              description:
+                "True only if the user's stated budget was the deciding factor in this item's verdict (rule 5). False otherwise, including when the item simply happens to be cheap or expensive.",
+            },
             reason: { type: "string", description: "Tied explicitly to the user's goal(s); names the evidence type." },
             mechanism: { type: "string", description: "1-3 plain-language sentences on what it does and how." },
           },
@@ -52,6 +57,7 @@ const TOOL_DEFINITION = {
             "goalsAddressed",
             "verdict",
             "confidence",
+            "budgetFlag",
             "reason",
             "mechanism",
           ],
@@ -85,7 +91,7 @@ Rules:
    - Weak: small, few, or low-quality human studies.
    - Insufficient evidence to rate: no meaningful human evidence for THIS goal.
 4. Use blood work only when a marker is directly relevant to an item (e.g. low vitamin D supports a vitamin D verdict). Cite the specific value in "reason" when you use it.
-5. Budget rule: the user's budget is an ingredient-level estimate, not product pricing. Estimate a typical monthly ingredient-level cost range for each item. If the total estimated cost of everything with a Keep/Take-leaning verdict would exceed the user's stated budget, the items with the weakest evidence (Weak or Insufficient evidence to rate) are the first to be flagged Remove/Don't, and "reason" must say the budget was the deciding factor for that item.
+5. Budget rule: the user's budget is an ingredient-level estimate, not product pricing. Estimate a typical monthly ingredient-level cost range for each item. If the total estimated cost of everything with a Keep/Take-leaning verdict would exceed the user's stated budget, the items with the weakest evidence (Weak or Insufficient evidence to rate) are the first to be flagged Remove/Don't. When budget was the deciding factor for an item's verdict, set budgetFlag=true on that item and say so in "reason"; otherwise set budgetFlag=false.
 6. Never mention brand names, product names, or diet/dietary advice. Never invent citations or study names.
 7. Keep "mechanism" to 1-3 plain-language sentences.
 8. status determines which verdicts are valid: "current" items must use Keep or Remove; "candidate" items must use Take or Don't. Never mix these up.
