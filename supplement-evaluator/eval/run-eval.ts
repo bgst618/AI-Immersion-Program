@@ -273,8 +273,17 @@ function scoreItem(
       const hit = expectation.reason_must_mention.some((term) => lower.includes(term.toLowerCase()));
       if (!hit) failReasons.push(`reason_missing_mention`);
     }
-    if (expectation.budget_flag !== undefined && report.budgetFlag !== expectation.budget_flag) {
-      failReasons.push(`budget_flag_mismatch:expected=${expectation.budget_flag},actual=${report.budgetFlag}`);
+    if (expectation.budget_flag !== undefined) {
+      // assemble.ts's applyOverrides forces confidence to "Insufficient evidence to
+      // rate" and clears budgetFlag to false whenever the niche-candidate or
+      // insufficient-evidence override fires — that's the generic, structural
+      // signal an override fired, regardless of what the case declares.
+      const overrideFired = normConf === "Insufficient";
+      const expectedBudgetFlag = overrideFired ? false : expectation.budget_flag;
+      if (report.budgetFlag !== expectedBudgetFlag) {
+        const overrideNote = overrideFired ? " (override fired, budget_flag expectation overridden to false)" : "";
+        failReasons.push(`budget_flag_mismatch:expected=${expectedBudgetFlag}${overrideNote},actual=${report.budgetFlag}`);
+      }
     }
     for (const phrase of banned) {
       if (report.reason.toLowerCase().includes(phrase.toLowerCase())) {
