@@ -1,17 +1,22 @@
-// Golden eval runner. Hits the REAL Anthropic API (no mocks) — costs money and
-// takes a while. Intentionally kept out of `npm test` / vitest so it never
-// runs in CI. Usage: `npm run eval` (needs ANTHROPIC_API_KEY in the env or in
-// .dev.vars).
+// Golden eval runner. Hits the REAL NVIDIA API (no mocks) — costs money/quota
+// and takes a while. Intentionally kept out of `npm test` / vitest so it
+// never runs in CI. Usage: `npm run eval` (needs NVIDIA_API_KEY in the env or
+// in .dev.vars).
 //
 // Env vars:
 //   EVAL_CASES=id1,id2   run only the named case ids (comma-separated)
 //   EVAL_RUNS=n          override runs_per_case (e.g. 1 for a cheap smoke run)
 //   EVAL_CONCURRENCY=n   cap in-flight requests across the whole suite (default 5)
+//   MODEL=...            override the NVIDIA model id (default: DEFAULT_MODEL in src/claude.ts)
+//
+// Request pacing to stay within NVIDIA's free-tier 40 requests/minute limit
+// happens here (see waitForRateLimitSlot / NVIDIA_FREE_TIER_REQUESTS_PER_MINUTE
+// below), independent of EVAL_CONCURRENCY — see that constant's comment.
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assembleReports } from "../src/assemble";
-import { ClaudeCallError, evaluateWithClaude } from "../src/claude";
+import { ClaudeCallError, DEFAULT_MODEL, evaluateWithClaude } from "../src/claude";
 import { compileItems } from "../src/items";
 import {
   IntakeSchema,
@@ -23,21 +28,32 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// --- API key -----------------------------------------------------------
+// --- API key / model, from process.env or .dev.vars ---------------------
 
-function loadApiKey(): string {
-  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
+function readDevVar(name: string): string | undefined {
   try {
     const devVars = readFileSync(join(__dirname, "..", ".dev.vars"), "utf-8");
     for (const line of devVars.split("\n")) {
-      const match = line.match(/^ANTHROPIC_API_KEY\s*=\s*(.+)$/);
+      const match = line.match(new RegExp(`^${name}\\s*=\\s*(.+)$`));
       if (match) return match[1]!.trim().replace(/^["']|["']$/g, "");
     }
   } catch {
     // no .dev.vars, fall through
   }
-  console.error("ANTHROPIC_API_KEY not set (checked process.env and .dev.vars). Aborting.");
-  process.exit(1);
+  return undefined;
+}
+
+function loadApiKey(): string {
+  const key = process.env.NVIDIA_API_KEY ?? readDevVar("NVIDIA_API_KEY");
+  if (!key) {
+    console.error("NVIDIA_API_KEY not set (checked process.env and .dev.vars). Aborting.");
+    process.exit(1);
+  }
+  return key;
+}
+
+function resolveModel(): string {
+  return process.env.MODEL ?? readDevVar("MODEL") ?? DEFAULT_MODEL;
 }
 
 // --- eval-cases.json types ----------------------------------------------
@@ -132,6 +148,32 @@ function mapInput(raw: RawCase["input"]): Intake {
 
 const CONCURRENCY = Number(process.env.EVAL_CONCURRENCY) || 5;
 
+// NVIDIA's build.nvidia.com free tier caps usage at 40 requests/minute per
+// API key. Each task normally issues one HTTP call to NVIDIA (up to two if
+// claude.ts's own one-time validation retry fires), so pacing task starts to
+// this rate keeps the whole suite comfortably within the free-tier limit
+// regardless of EVAL_CONCURRENCY. Deliberately not in src/claude.ts: that
+// module is shared with the production Worker (a single request per user
+// action, never worth throttling) and with the mocked unit tests, which
+// would otherwise pick up real wall-clock delay for no reason.
+const NVIDIA_FREE_TIER_REQUESTS_PER_MINUTE = 40;
+const MIN_TASK_INTERVAL_MS = Math.ceil(60_000 / NVIDIA_FREE_TIER_REQUESTS_PER_MINUTE);
+
+let rateLimitGate: Promise<void> = Promise.resolve();
+let lastTaskStartedAt = 0;
+
+function waitForRateLimitSlot(): Promise<void> {
+  const slot = rateLimitGate.then(async () => {
+    const wait = Math.max(0, lastTaskStartedAt + MIN_TASK_INTERVAL_MS - Date.now());
+    if (wait > 0) {
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
+    lastTaskStartedAt = Date.now();
+  });
+  rateLimitGate = slot;
+  return slot;
+}
+
 async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let next = 0;
@@ -175,9 +217,12 @@ interface Task {
   items: ReturnType<typeof compileItems>;
 }
 
-async function runOne(task: Task, apiKey: string): Promise<RunResult> {
+async function runOne(task: Task, apiKey: string, model: string): Promise<RunResult> {
   try {
-    const output = await withTransientRetry(() => evaluateWithClaude(apiKey, task.intake, task.items));
+    const output = await withTransientRetry(async () => {
+      await waitForRateLimitSlot();
+      return evaluateWithClaude(apiKey, model, task.intake, task.items);
+    });
     const evaluation = assembleReports(task.items, output);
     return { ok: true, items: evaluation.items };
   } catch (error) {
@@ -187,7 +232,7 @@ async function runOne(task: Task, apiKey: string): Promise<RunResult> {
 
 // Runs every (case, repetition) as one flat pool so CONCURRENCY caps total
 // in-flight requests across the whole suite, not per case.
-async function runAllCases(cases: RawCase[], apiKey: string, runsPerCase: number): Promise<CaseRunData[]> {
+async function runAllCases(cases: RawCase[], apiKey: string, model: string, runsPerCase: number): Promise<CaseRunData[]> {
   const tasks: Task[] = cases.map((c, caseIndex) => {
     const intake = mapInput(c.input);
     return { caseIndex, intake, items: compileItems(intake.stack, intake.candidates) };
@@ -200,7 +245,7 @@ async function runAllCases(cases: RawCase[], apiKey: string, runsPerCase: number
     }
   }
 
-  const flatResults = await mapWithConcurrency(flatRuns, CONCURRENCY, async ({ caseIndex }) => runOne(tasks[caseIndex]!, apiKey));
+  const flatResults = await mapWithConcurrency(flatRuns, CONCURRENCY, async ({ caseIndex }) => runOne(tasks[caseIndex]!, apiKey, model));
 
   const runsByCase: RunResult[][] = cases.map(() => []);
   flatRuns.forEach((r, i) => runsByCase[r.caseIndex]!.push(flatResults[i]!));
@@ -379,6 +424,7 @@ function resolveCases(): RawCase[] {
 
 async function main() {
   const apiKey = loadApiKey();
+  const model = resolveModel();
   const runsPerCase = resolveRunsPerCase();
   const cases = resolveCases();
 
@@ -391,9 +437,11 @@ async function main() {
     );
   }
 
-  console.log(`Running ${cases.length} cases x ${runsPerCase} runs against the real API (concurrency=${CONCURRENCY})...\n`);
+  console.log(
+    `Running ${cases.length} cases x ${runsPerCase} runs against NVIDIA (${model}, concurrency=${CONCURRENCY})...\n`,
+  );
 
-  const allCaseData = await runAllCases(cases, apiKey, runsPerCase);
+  const allCaseData = await runAllCases(cases, apiKey, model, runsPerCase);
 
   const itemRows: ItemScoreRow[] = [];
   const structuralNotes: { caseId: string; note: string; actual: string }[] = [];

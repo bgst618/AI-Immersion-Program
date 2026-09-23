@@ -1,70 +1,77 @@
-import { z } from "zod";
 import { validateStructure } from "./assemble";
 import type { CompiledItem, Intake } from "./schema";
 import { ClaudeToolOutputSchema, type ClaudeToolOutput, markerLabel, markerUnit } from "./schema";
 
-const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_VERSION = "2023-06-01";
-const MODEL = "claude-sonnet-5";
+// NVIDIA's build.nvidia.com endpoint is OpenAI-compatible (Chat Completions API).
+const NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 const MAX_TOKENS = 4000;
 const TOOL_NAME = "submit_evaluation";
 
+// meta/llama-3.1-70b-instruct has reliable, well-documented function/tool
+// calling support on NVIDIA's catalog. Override without a code change via
+// the MODEL env var (Worker: wrangler.jsonc `vars.MODEL` / a secret; eval
+// script: process.env.MODEL or .dev.vars).
+export const DEFAULT_MODEL = "meta/llama-3.1-70b-instruct";
+
 const TOOL_DEFINITION = {
-  name: TOOL_NAME,
-  description:
-    "Submit the per-item supplement evaluation. Must include exactly one entry for every item provided, in the same order.",
-  input_schema: {
-    type: "object",
-    properties: {
-      items: {
-        type: "array",
+  type: "function",
+  function: {
+    name: TOOL_NAME,
+    description:
+      "Submit the per-item supplement evaluation. Must include exactly one entry for every item provided, in the same order.",
+    parameters: {
+      type: "object",
+      properties: {
         items: {
-          type: "object",
-          properties: {
-            name: { type: "string", description: "Exact item name as given in the input list." },
-            status: { type: "string", enum: ["current", "candidate"] },
-            isMainstreamHumanTested: {
-              type: "boolean",
-              description: "True only if there is meaningful mainstream human research on this ingredient.",
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string", description: "Exact item name as given in the input list." },
+              status: { type: "string", enum: ["current", "candidate"] },
+              isMainstreamHumanTested: {
+                type: "boolean",
+                description: "True only if there is meaningful mainstream human research on this ingredient.",
+              },
+              evidenceType: {
+                type: "string",
+                description: "e.g. 'multiple human RCTs and meta-analyses', 'limited human data', 'animal studies only'.",
+              },
+              goalsAddressed: {
+                type: "array",
+                items: { type: "string" },
+                description: "Subset of the user's stated goals this item's evidence actually supports. Empty if none.",
+              },
+              verdict: { type: "string", enum: ["Keep", "Remove", "Take", "Don't"] },
+              confidence: {
+                type: "string",
+                enum: ["Strong", "Moderate", "Weak", "Insufficient evidence to rate"],
+              },
+              budgetFlag: {
+                type: "boolean",
+                description:
+                  "True only if the user's stated budget was the deciding factor in this item's verdict (rule 5). False otherwise, including when the item simply happens to be cheap or expensive.",
+              },
+              reason: { type: "string", description: "Tied explicitly to the user's goal(s); names the evidence type." },
+              mechanism: { type: "string", description: "1-3 plain-language sentences on what it does and how." },
             },
-            evidenceType: {
-              type: "string",
-              description: "e.g. 'multiple human RCTs and meta-analyses', 'limited human data', 'animal studies only'.",
-            },
-            goalsAddressed: {
-              type: "array",
-              items: { type: "string" },
-              description: "Subset of the user's stated goals this item's evidence actually supports. Empty if none.",
-            },
-            verdict: { type: "string", enum: ["Keep", "Remove", "Take", "Don't"] },
-            confidence: {
-              type: "string",
-              enum: ["Strong", "Moderate", "Weak", "Insufficient evidence to rate"],
-            },
-            budgetFlag: {
-              type: "boolean",
-              description:
-                "True only if the user's stated budget was the deciding factor in this item's verdict (rule 5). False otherwise, including when the item simply happens to be cheap or expensive.",
-            },
-            reason: { type: "string", description: "Tied explicitly to the user's goal(s); names the evidence type." },
-            mechanism: { type: "string", description: "1-3 plain-language sentences on what it does and how." },
+            required: [
+              "name",
+              "status",
+              "isMainstreamHumanTested",
+              "evidenceType",
+              "goalsAddressed",
+              "verdict",
+              "confidence",
+              "budgetFlag",
+              "reason",
+              "mechanism",
+            ],
           },
-          required: [
-            "name",
-            "status",
-            "isMainstreamHumanTested",
-            "evidenceType",
-            "goalsAddressed",
-            "verdict",
-            "confidence",
-            "budgetFlag",
-            "reason",
-            "mechanism",
-          ],
         },
       },
+      required: ["items"],
     },
-    required: ["items"],
   },
 } as const;
 
@@ -115,9 +122,17 @@ Blood work:
 ${formatBloodWork(intake)}`;
 }
 
-interface AnthropicMessage {
-  role: "user" | "assistant";
-  content: unknown;
+interface OpenAIToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
+interface OpenAIMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | null;
+  tool_calls?: OpenAIToolCall[];
+  tool_call_id?: string;
 }
 
 export class ClaudeCallError extends Error {}
@@ -127,39 +142,44 @@ export class ClaudeValidationError extends Error {
   }
 }
 
-async function callAnthropic(apiKey: string, messages: AnthropicMessage[]): Promise<any> {
-  const response = await fetch(ANTHROPIC_API_URL, {
+async function callNvidia(apiKey: string, model: string, messages: OpenAIMessage[]): Promise<any> {
+  const response = await fetch(NVIDIA_API_URL, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": ANTHROPIC_VERSION,
+      authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: MODEL,
+      model,
       max_tokens: MAX_TOKENS,
       temperature: 0.2,
-      system: buildSystemPrompt(),
       messages,
       tools: [TOOL_DEFINITION],
-      tool_choice: { type: "tool", name: TOOL_NAME },
+      tool_choice: { type: "function", function: { name: TOOL_NAME } },
     }),
   });
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    throw new ClaudeCallError(`Anthropic API error ${response.status}: ${body}`);
+    throw new ClaudeCallError(`NVIDIA API error ${response.status}: ${body}`);
   }
 
   return response.json();
 }
 
-function extractToolUse(apiResponse: any): { id: string; input: unknown } {
-  const block = (apiResponse?.content ?? []).find((b: any) => b.type === "tool_use" && b.name === TOOL_NAME);
-  if (!block) {
-    throw new ClaudeCallError("Model response did not include the expected tool_use block");
+function extractToolCall(apiResponse: any): { id: string; rawArguments: string; input: unknown } {
+  const toolCalls = apiResponse?.choices?.[0]?.message?.tool_calls ?? [];
+  const call = toolCalls.find((tc: any) => tc.type === "function" && tc.function?.name === TOOL_NAME);
+  if (!call) {
+    throw new ClaudeCallError("Model response did not include the expected tool call");
   }
-  return { id: block.id, input: block.input };
+  let input: unknown;
+  try {
+    input = JSON.parse(call.function.arguments);
+  } catch (error) {
+    throw new ClaudeCallError(`Model tool call arguments were not valid JSON: ${(error as Error).message}`);
+  }
+  return { id: call.id, rawArguments: call.function.arguments, input };
 }
 
 function validate(
@@ -178,40 +198,42 @@ function validate(
   return { ok: true, data: parsed.data };
 }
 
-// Steps 3-6: one Claude call, forced tool use, validated (schema + structure)
-// and retried once on failure per PLAN.md §5/§9 (fixture 7).
+// Steps 3-6: one model call, forced tool/function calling, validated (schema
+// + structure) and retried once on failure per PLAN.md §5/§9 (fixture 7).
 export async function evaluateWithClaude(
   apiKey: string,
+  model: string,
   intake: Intake,
   items: CompiledItem[],
 ): Promise<ClaudeToolOutput> {
-  const messages: AnthropicMessage[] = [{ role: "user", content: buildUserMessage(intake, items) }];
+  const messages: OpenAIMessage[] = [
+    { role: "system", content: buildSystemPrompt() },
+    { role: "user", content: buildUserMessage(intake, items) },
+  ];
 
-  const first = await callAnthropic(apiKey, messages);
-  const firstToolUse = extractToolUse(first);
-  const firstResult = validate(items, intake.goals, firstToolUse.input);
+  const first = await callNvidia(apiKey, model, messages);
+  const firstCall = extractToolCall(first);
+  const firstResult = validate(items, intake.goals, firstCall.input);
   if (firstResult.ok) return firstResult.data;
 
   // Retry once with the validation error appended, per spec.
-  const retryMessages: AnthropicMessage[] = [
+  const retryMessages: OpenAIMessage[] = [
     ...messages,
-    { role: "assistant", content: first.content },
     {
-      role: "user",
-      content: [
-        {
-          type: "tool_result",
-          tool_use_id: firstToolUse.id,
-          is_error: true,
-          content: `Your submission failed validation: ${firstResult.message}. Call ${TOOL_NAME} again with corrected input that satisfies the schema exactly.`,
-        },
-      ],
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: firstCall.id, type: "function", function: { name: TOOL_NAME, arguments: firstCall.rawArguments } }],
+    },
+    {
+      role: "tool",
+      tool_call_id: firstCall.id,
+      content: `Your submission failed validation: ${firstResult.message}. Call ${TOOL_NAME} again with corrected input that satisfies the schema exactly.`,
     },
   ];
 
-  const second = await callAnthropic(apiKey, retryMessages);
-  const secondToolUse = extractToolUse(second);
-  const secondResult = validate(items, intake.goals, secondToolUse.input);
+  const second = await callNvidia(apiKey, model, retryMessages);
+  const secondCall = extractToolCall(second);
+  const secondResult = validate(items, intake.goals, secondCall.input);
   if (secondResult.ok) return secondResult.data;
 
   throw new ClaudeValidationError(secondResult.message);

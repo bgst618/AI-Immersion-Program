@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ClaudeValidationError, evaluateWithClaude } from "../src/claude";
+import { ClaudeValidationError, DEFAULT_MODEL, evaluateWithClaude } from "../src/claude";
 import type { CompiledItem, Intake } from "../src/schema";
 
 const intake: Intake = {
@@ -12,9 +12,25 @@ const intake: Intake = {
 
 const items: CompiledItem[] = [{ name: "creatine monohydrate", status: "candidate" }];
 
-function anthropicResponse(toolInput: unknown, toolUseId = "toolu_1") {
+// Shape of an NVIDIA (OpenAI-compatible Chat Completions) response with a
+// forced function call. `arguments` is a JSON string, not a parsed object.
+function nvidiaResponse(toolInput: unknown, toolCallId = "call_1") {
   return {
-    content: [{ type: "tool_use", id: toolUseId, name: "submit_evaluation", input: toolInput }],
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: toolCallId,
+              type: "function",
+              function: { name: "submit_evaluation", arguments: JSON.stringify(toolInput) },
+            },
+          ],
+        },
+      },
+    ],
   };
 }
 
@@ -45,19 +61,19 @@ describe("evaluateWithClaude", () => {
   });
 
   it("returns parsed output on a valid first response", async () => {
-    (fetch as any).mockResolvedValueOnce(jsonResponse(anthropicResponse({ items: [validItem] })));
+    (fetch as any).mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [validItem] })));
 
-    const result = await evaluateWithClaude("fake-key", intake, items);
+    const result = await evaluateWithClaude("fake-key", DEFAULT_MODEL, intake, items);
     expect(result.items[0]!.name).toBe("creatine monohydrate");
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("retries once when the first response fails schema validation, then succeeds", async () => {
     (fetch as any)
-      .mockResolvedValueOnce(jsonResponse(anthropicResponse({ items: [{ ...validItem, verdict: "MAYBE" }] })))
-      .mockResolvedValueOnce(jsonResponse(anthropicResponse({ items: [validItem] })));
+      .mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [{ ...validItem, verdict: "MAYBE" }] })))
+      .mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [validItem] })));
 
-    const result = await evaluateWithClaude("fake-key", intake, items);
+    const result = await evaluateWithClaude("fake-key", DEFAULT_MODEL, intake, items);
     expect(result.items[0]!.verdict).toBe("Take");
     expect(fetch).toHaveBeenCalledTimes(2);
   });
@@ -73,21 +89,33 @@ describe("evaluateWithClaude", () => {
     };
 
     (fetch as any)
-      .mockResolvedValueOnce(jsonResponse(anthropicResponse({ items: [badOutput] })))
-      .mockResolvedValueOnce(jsonResponse(anthropicResponse({ items: [badOutput] })));
+      .mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [badOutput] })))
+      .mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [badOutput] })));
 
-    await expect(evaluateWithClaude("fake-key", currentIntake, currentItems)).rejects.toBeInstanceOf(
-      ClaudeValidationError,
-    );
+    await expect(
+      evaluateWithClaude("fake-key", DEFAULT_MODEL, currentIntake, currentItems),
+    ).rejects.toBeInstanceOf(ClaudeValidationError);
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it("throws ClaudeValidationError if both attempts fail schema validation", async () => {
     (fetch as any)
-      .mockResolvedValueOnce(jsonResponse(anthropicResponse({ items: [{ ...validItem, verdict: "MAYBE" }] })))
-      .mockResolvedValueOnce(jsonResponse(anthropicResponse({ items: [{ ...validItem, verdict: "NOPE" }] })));
+      .mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [{ ...validItem, verdict: "MAYBE" }] })))
+      .mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [{ ...validItem, verdict: "NOPE" }] })));
 
-    await expect(evaluateWithClaude("fake-key", intake, items)).rejects.toBeInstanceOf(ClaudeValidationError);
+    await expect(evaluateWithClaude("fake-key", DEFAULT_MODEL, intake, items)).rejects.toBeInstanceOf(
+      ClaudeValidationError,
+    );
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws ClaudeCallError if the model response has no tool call", async () => {
+    (fetch as any).mockResolvedValueOnce(
+      jsonResponse({ choices: [{ message: { role: "assistant", content: "I cannot help with that." } }] }),
+    );
+
+    await expect(evaluateWithClaude("fake-key", DEFAULT_MODEL, intake, items)).rejects.toThrow(
+      "did not include the expected tool call",
+    );
   });
 });

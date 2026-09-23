@@ -1,0 +1,2 @@
+NVIDIA_API_KEY=nvapi-your-key-here
+MODEL=meta/llama-3.1-70b-instruct

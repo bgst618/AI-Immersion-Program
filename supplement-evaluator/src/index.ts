@@ -1,6 +1,6 @@
 import { ZodError } from "zod";
 import { assembleReports } from "./assemble";
-import { ClaudeCallError, ClaudeValidationError, evaluateWithClaude } from "./claude";
+import { ClaudeCallError, ClaudeValidationError, DEFAULT_MODEL, evaluateWithClaude } from "./claude";
 import type { Env } from "./env";
 import { findFirstVagueGoal } from "./goals";
 import { compileItems } from "./items";
@@ -41,22 +41,22 @@ async function handleEvaluate(request: Request, env: Env): Promise<Response> {
     return json({ error: "invalid_request", details: "stack and candidates cannot both be empty" }, 400);
   }
 
-  // Steps 3-7: one Claude call (forced tool use) + code-side enforcement.
-  if (!env.ANTHROPIC_API_KEY) {
+  // Steps 3-7: one model call (forced tool/function calling) + code-side enforcement.
+  if (!env.NVIDIA_API_KEY) {
     return json({ error: "server_misconfigured" }, 502);
   }
 
   try {
-    const claudeOutput = await evaluateWithClaude(env.ANTHROPIC_API_KEY, intake, items);
+    const claudeOutput = await evaluateWithClaude(env.NVIDIA_API_KEY, env.MODEL ?? DEFAULT_MODEL, intake, items);
     const evaluation = assembleReports(items, claudeOutput);
     return json(evaluation, 200);
   } catch (error) {
     if (error instanceof ClaudeValidationError) {
-      console.error("Claude output failed validation after retry:", error.message);
+      console.error("Model output failed validation after retry:", error.message);
       return json({ error: "model_output_invalid" }, 502);
     }
     if (error instanceof ClaudeCallError) {
-      console.error("Claude API call failed:", error.message);
+      console.error("Model API call failed:", error.message);
       return json({ error: "upstream_error" }, 502);
     }
     console.error("Unexpected error evaluating stack:", error);

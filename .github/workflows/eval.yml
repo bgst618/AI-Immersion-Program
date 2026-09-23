@@ -1,6 +1,6 @@
 name: Golden Eval (manual)
 
-# Manual trigger only. This calls the real Anthropic API and costs money,
+# Manual trigger only. This calls the real NVIDIA API and costs money/quota,
 # so it must never run on push or pull_request.
 on:
   workflow_dispatch:
@@ -11,6 +11,10 @@ on:
         default: ''
       eval_runs:
         description: 'Override runs per case, e.g. "1" for a cheap smoke run. Leave blank to use the default (5).'
+        required: false
+        default: ''
+      model:
+        description: 'NVIDIA model id to evaluate, e.g. "meta/llama-3.1-70b-instruct". Leave blank to use the script default.'
         required: false
         default: ''
 
@@ -40,7 +44,8 @@ jobs:
 
       - name: Run golden eval
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          MODEL: ${{ inputs.model }}
           EVAL_CASES: ${{ inputs.eval_cases }}
           EVAL_RUNS: ${{ inputs.eval_runs }}
         run: npm run eval
