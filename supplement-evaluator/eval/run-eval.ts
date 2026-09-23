@@ -2,6 +2,11 @@
 // takes a while. Intentionally kept out of `npm test` / vitest so it never
 // runs in CI. Usage: `npm run eval` (needs ANTHROPIC_API_KEY in the env or in
 // .dev.vars).
+//
+// Env vars:
+//   EVAL_CASES=id1,id2   run only the named case ids (comma-separated)
+//   EVAL_RUNS=n          override runs_per_case (e.g. 1 for a cheap smoke run)
+//   EVAL_CONCURRENCY=n   cap in-flight requests across the whole suite (default 5)
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -182,7 +187,7 @@ async function runOne(task: Task, apiKey: string): Promise<RunResult> {
 
 // Runs every (case, repetition) as one flat pool so CONCURRENCY caps total
 // in-flight requests across the whole suite, not per case.
-async function runAllCases(cases: RawCase[], apiKey: string): Promise<CaseRunData[]> {
+async function runAllCases(cases: RawCase[], apiKey: string, runsPerCase: number): Promise<CaseRunData[]> {
   const tasks: Task[] = cases.map((c, caseIndex) => {
     const intake = mapInput(c.input);
     return { caseIndex, intake, items: compileItems(intake.stack, intake.candidates) };
@@ -190,7 +195,7 @@ async function runAllCases(cases: RawCase[], apiKey: string): Promise<CaseRunDat
 
   const flatRuns: { caseIndex: number; runIndex: number }[] = [];
   for (const task of tasks) {
-    for (let runIndex = 0; runIndex < evalFile.scoring.runs_per_case; runIndex++) {
+    for (let runIndex = 0; runIndex < runsPerCase; runIndex++) {
       flatRuns.push({ caseIndex: task.caseIndex, runIndex });
     }
   }
@@ -224,11 +229,19 @@ function findItemReport(items: ItemReport[], name: string): ItemReport | undefin
   return items.find((i) => i.name.toLowerCase() === name.toLowerCase());
 }
 
+// Heuristic for "the reason cites budget as a factor" — the system prompt
+// (claude.ts, budget rule) requires the reason to say so explicitly when
+// budget drove the verdict.
+function reasonCitesBudget(reason: string): boolean {
+  return /\bbudget\b/i.test(reason);
+}
+
 function scoreItem(
   caseData: CaseRunData,
   itemName: string,
   expectation: RawItemExpectation,
   globalBanned: string[],
+  runsPerCase: number,
 ): ItemScoreRow {
   const failReasons: string[] = [];
   const verdicts: (string | null)[] = [];
@@ -267,6 +280,12 @@ function scoreItem(
       const hit = expectation.reason_must_mention.some((term) => lower.includes(term.toLowerCase()));
       if (!hit) failReasons.push(`reason_missing_mention`);
     }
+    if (expectation.budget_flag !== undefined) {
+      const cited = reasonCitesBudget(report.reason);
+      if (cited !== expectation.budget_flag) {
+        failReasons.push(`budget_flag_mismatch:expected=${expectation.budget_flag},actual=${cited}`);
+      }
+    }
     for (const phrase of banned) {
       if (report.reason.toLowerCase().includes(phrase.toLowerCase())) {
         failReasons.push(`banned_phrase:"${phrase}"`);
@@ -284,7 +303,10 @@ function scoreItem(
     const counts = new Map<string, number>();
     for (const c of nonNullConfidences) counts.set(c, (counts.get(c) ?? 0) + 1);
     const maxAgreement = Math.max(...counts.values());
-    if (maxAgreement < 4) failReasons.push("consistency:confidence_varies");
+    // Default runs_per_case=5 requires 4/5 (80%) agreement; scale the same
+    // ratio when EVAL_RUNS overrides the run count.
+    const requiredAgreement = Math.max(1, Math.ceil(runsPerCase * 0.8));
+    if (maxAgreement < requiredAgreement) failReasons.push("consistency:confidence_varies");
   }
 
   return {
@@ -320,23 +342,59 @@ function summarizeList(values: (string | null)[]): string {
   return values.map((v) => v ?? "ERR").join(",");
 }
 
+// --- Subset selection: EVAL_CASES=id1,id2 and EVAL_RUNS=n for cheap runs ----
+
+function resolveRunsPerCase(): number {
+  const raw = process.env.EVAL_RUNS;
+  if (!raw) return evalFile.scoring.runs_per_case;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    console.error(`EVAL_RUNS must be a positive integer, got "${raw}". Aborting.`);
+    process.exit(1);
+  }
+  return n;
+}
+
+function resolveCases(): RawCase[] {
+  const raw = process.env.EVAL_CASES;
+  if (!raw) return evalFile.cases;
+  const ids = new Set(
+    raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+  const selected = evalFile.cases.filter((c) => ids.has(c.id));
+  const missing = [...ids].filter((id) => !selected.some((c) => c.id === id));
+  if (missing.length > 0) {
+    console.warn(`EVAL_CASES referenced unknown case id(s): ${missing.join(", ")}`);
+  }
+  if (selected.length === 0) {
+    console.error("EVAL_CASES matched no known case ids. Aborting.");
+    process.exit(1);
+  }
+  return selected;
+}
+
 // --- Main ----------------------------------------------------------------
 
 async function main() {
   const apiKey = loadApiKey();
+  const runsPerCase = resolveRunsPerCase();
+  const cases = resolveCases();
 
   // Touch mapBloodwork eagerly for every case so we surface unmapped markers
   // before running anything expensive.
-  for (const c of evalFile.cases) mapBloodwork(c.input.bloodwork ?? null);
+  for (const c of cases) mapBloodwork(c.input.bloodwork ?? null);
   if (unmappedMarkersSeen.size > 0) {
     console.warn(
       `\nWARNING: eval-cases.json uses bloodwork marker key(s) not in schema.ts BLOOD_MARKERS / BLOODWORK_KEY_MAP: ${[...unmappedMarkersSeen].join(", ")}. Those entries were dropped from the intake sent to the model.\n`,
     );
   }
 
-  console.log(`Running ${evalFile.cases.length} cases x ${evalFile.scoring.runs_per_case} runs against the real API (concurrency=${CONCURRENCY})...\n`);
+  console.log(`Running ${cases.length} cases x ${runsPerCase} runs against the real API (concurrency=${CONCURRENCY})...\n`);
 
-  const allCaseData = await runAllCases(evalFile.cases, apiKey);
+  const allCaseData = await runAllCases(cases, apiKey, runsPerCase);
 
   const itemRows: ItemScoreRow[] = [];
   const structuralNotes: { caseId: string; note: string; actual: string }[] = [];
@@ -349,7 +407,9 @@ async function main() {
         structuralNotes.push({ caseId: caseData.case.id, note: expectation as string, actual });
         continue;
       }
-      itemRows.push(scoreItem(caseData, key, expectation as RawItemExpectation, evalFile.scoring.global_reason_must_not_mention));
+      itemRows.push(
+        scoreItem(caseData, key, expectation as RawItemExpectation, evalFile.scoring.global_reason_must_not_mention, runsPerCase),
+      );
     }
   }
 
@@ -394,9 +454,18 @@ async function main() {
     pairGroups.set(c.pair_id, [...(pairGroups.get(c.pair_id) ?? []), c]);
   }
   const pairResults: { pairId: string; cases: string; dominantVerdicts: string; result: string }[] = [];
-  for (const [pairId, cases] of pairGroups) {
-    const dominants = cases.map((c) => {
-      const caseData = allCaseData.find((d) => d.case.id === c.id)!;
+  for (const [pairId, pairCases] of pairGroups) {
+    if (pairCases.length < 2) {
+      // EVAL_CASES filtered out the other half of this pair — nothing to compare.
+      pairResults.push({
+        pairId,
+        cases: pairCases.map((c) => c.id).join(" vs "),
+        dominantVerdicts: "n/a",
+        result: "SKIPPED (incomplete pair)",
+      });
+      continue;
+    }
+    const dominants = pairCases.map((c) => {
       const itemKey = Object.keys(c.expect).find((k) => k !== "_structural");
       const verdicts = itemKey ? itemRows.find((r) => r.caseId === c.id && r.itemName === itemKey)?.verdicts ?? [] : [];
       return dominantVerdict(verdicts);
@@ -405,7 +474,7 @@ async function main() {
     const pass = distinct.size > 1;
     pairResults.push({
       pairId,
-      cases: cases.map((c) => c.id).join(" vs "),
+      cases: pairCases.map((c) => c.id).join(" vs "),
       dominantVerdicts: dominants.map((d) => d ?? "ERR").join(" vs "),
       result: pass ? "PASS" : "FAIL",
     });
@@ -433,11 +502,13 @@ async function main() {
   const failedCases = caseLevel.filter((c) => c.result === "FAIL").length;
   const infoCases = caseLevel.filter((c) => c.result.startsWith("INFO")).length;
   const pairsFailed = pairResults.filter((p) => p.result === "FAIL").length;
+  const pairsSkipped = pairResults.filter((p) => p.result.startsWith("SKIPPED")).length;
+  const pairsPassed = pairResults.length - pairsFailed - pairsSkipped;
   const runErrors = allCaseData.flatMap((c) => c.runs.filter((r) => !r.ok)).length;
 
   console.log("\n=== Summary ===");
   console.log(`Cases: ${totalCases} (${passedCases} pass, ${failedCases} fail, ${infoCases} informational)`);
-  console.log(`Pairs: ${pairResults.length} (${pairResults.length - pairsFailed} pass, ${pairsFailed} fail)`);
+  console.log(`Pairs: ${pairResults.length} (${pairsPassed} pass, ${pairsFailed} fail, ${pairsSkipped} skipped/incomplete)`);
   console.log(`Consistency-specific failures: ${consistencyFailures.length}`);
   console.log(`Run-level API/validation errors: ${runErrors}`);
 

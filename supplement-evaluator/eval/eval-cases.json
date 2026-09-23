@@ -252,11 +252,10 @@
       "category": "end_to_end",
       "input": { "stack": ["multivitamin", "fish oil"], "goals": ["build muscle", "improve sleep quality"], "candidates": ["creatine monohydrate", "magnesium glycinate"], "budget_usd_month": 40, "bloodwork": null },
       "expect": {
-        "creatine monohydrate": { "status": "candidate", "acceptable_verdicts": ["Take"], "acceptable_confidence": ["Strong"], "reason_must_mention": ["muscle"] },
-        "magnesium glycinate": { "status": "candidate", "acceptable_verdicts": ["Take", "Don't"], "acceptable_confidence": ["Weak", "Insufficient"], "reason_must_mention": ["sleep"] },
+        "creatine monohydrate": { "status": "candidate", "acceptable_verdicts": ["Take"], "acceptable_confidence": ["Strong"], "reason_must_mention": ["muscle"], "reason_must_not_mention": ["sleep"] },
+        "magnesium glycinate": { "status": "candidate", "acceptable_verdicts": ["Take", "Don't"], "acceptable_confidence": ["Weak", "Insufficient"], "reason_must_mention": ["sleep"], "reason_must_not_mention": ["muscle"] },
         "multivitamin": { "status": "current", "acceptable_verdicts": ["Remove"], "acceptable_confidence": ["Insufficient", "Weak"] },
-        "fish oil": { "status": "current", "acceptable_verdicts": ["Remove"], "acceptable_confidence": ["Weak", "Insufficient"] },
-        "_structural": "Each reason names the specific goal it's judged against. Creatine's reason should not mention sleep; magnesium's should not mention muscle."
+        "fish oil": { "status": "current", "acceptable_verdicts": ["Remove"], "acceptable_confidence": ["Weak", "Insufficient"] }
       },
       "evidence_note": "Realistic full input. Checks that multi-goal reasoning attributes each item to the right goal instead of blending them."
     }
