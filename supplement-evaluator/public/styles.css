@@ -330,6 +330,13 @@ summary {
   color: var(--accent-strong);
 }
 
+.confidence-explainer {
+  display: block;
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin: 0 0 0.75rem;
+}
+
 .card p {
   margin: 0.5rem 0;
 }

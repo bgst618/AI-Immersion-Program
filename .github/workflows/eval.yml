@@ -14,7 +14,7 @@ on:
         required: false
         default: ''
       model:
-        description: 'NVIDIA model id to evaluate, e.g. "meta/llama-3.1-70b-instruct". Leave blank to use the script default.'
+        description: 'NVIDIA model id to evaluate, e.g. "nvidia/nemotron-3-super-120b-a12b". Leave blank to use the script default.'
         required: false
         default: ''
 

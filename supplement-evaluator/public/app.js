@@ -163,6 +163,15 @@ const CONFIDENCE_CLASS = {
   "Insufficient evidence to rate": "Insufficient",
 };
 
+// Confidence means how sure we are in the verdict, based on evidence
+// strength for that verdict — not whether the evidence shows a benefit.
+const CONFIDENCE_EXPLANATION = {
+  Strong: "Multiple well-powered human studies consistently support this verdict, for or against.",
+  Moderate: "Some human evidence supports this verdict, though less extensive or consistent.",
+  Weak: "Only small, few, or low-quality human studies address this verdict either way.",
+  "Insufficient evidence to rate": "No meaningful human evidence exists yet for this goal.",
+};
+
 const POSITIVE_VERDICTS = new Set(["Keep", "Take"]);
 
 function renderResults(evaluation) {
@@ -201,6 +210,11 @@ function renderResults(evaluation) {
       badgeRow.push(budgetBadge);
     }
 
+    const confidenceExplainer = document.createElement("p");
+    confidenceExplainer.className = "confidence-explainer";
+    confidenceExplainer.textContent =
+      CONFIDENCE_EXPLANATION[item.confidence] || CONFIDENCE_EXPLANATION["Insufficient evidence to rate"];
+
     const reasonLabel = document.createElement("p");
     reasonLabel.className = "label";
     reasonLabel.textContent = "Why";
@@ -213,7 +227,7 @@ function renderResults(evaluation) {
     const mechanism = document.createElement("p");
     mechanism.textContent = item.mechanism;
 
-    card.append(header, verdict, ...badgeRow, reasonLabel, reason, mechanismLabel, mechanism);
+    card.append(header, verdict, ...badgeRow, confidenceExplainer, reasonLabel, reason, mechanismLabel, mechanism);
     resultsCards.appendChild(card);
   }
 

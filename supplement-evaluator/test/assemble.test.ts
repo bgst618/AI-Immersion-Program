@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assembleReports, validateStructure } from "../src/assemble";
+import { assembleReports, checkContentGuard, validateStructure } from "../src/assemble";
 import type { ClaudeItemOutput, ClaudeToolOutput, CompiledItem } from "../src/schema";
 
 function item(overrides: Partial<ClaudeItemOutput> = {}): ClaudeItemOutput {
@@ -47,6 +47,56 @@ describe("validateStructure", () => {
   it("fails when an item outside the input list is returned", () => {
     const output: ClaudeToolOutput = { items: [item({ name: "unknown ingredient" })] };
     expect(validateStructure(compiled, ["build muscle"], output).ok).toBe(false);
+  });
+
+  it("fails when the reason never names the goal it's judged against", () => {
+    const output: ClaudeToolOutput = {
+      items: [item({ reason: "Well supported by many human RCTs and meta-analyses for this purpose." })],
+    };
+    expect(validateStructure(compiled, ["build muscle"], output).ok).toBe(false);
+  });
+
+  it("passes when goalsAddressed is empty but the reason names a goal from the full list", () => {
+    const output: ClaudeToolOutput = {
+      items: [
+        item({
+          goalsAddressed: [],
+          confidence: "Insufficient evidence to rate",
+          reason: "No meaningful human evidence exists for your goal to build muscle.",
+        }),
+      ],
+    };
+    expect(validateStructure(compiled, ["build muscle"], output).ok).toBe(true);
+  });
+});
+
+describe("checkContentGuard", () => {
+  it("passes clean output", () => {
+    const output: ClaudeToolOutput = { items: [item()] };
+    expect(checkContentGuard(output).ok).toBe(true);
+  });
+
+  it("fails on a diet mention in the mechanism, not just the reason", () => {
+    const output: ClaudeToolOutput = {
+      items: [item({ mechanism: "May offer modest benefit in individuals with adequate diet." })],
+    };
+    const result = checkContentGuard(output);
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/diet/i);
+  });
+
+  it("fails on a diet mention in the reason", () => {
+    const output: ClaudeToolOutput = {
+      items: [item({ reason: "Works well for build muscle when paired with a good diet." })],
+    };
+    expect(checkContentGuard(output).ok).toBe(false);
+  });
+
+  it("fails on a brand mention in evidenceType", () => {
+    const output: ClaudeToolOutput = { items: [item({ evidenceType: "Studied using Thorne's formulation" })] };
+    const result = checkContentGuard(output);
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/brand/i);
   });
 });
 
@@ -148,5 +198,14 @@ describe("assembleReports", () => {
     };
     const result = assembleReports(compiled, output);
     expect(result.items[0]!.budgetFlag).toBe(false);
+  });
+
+  it("capitalizes the first letter of the reason", () => {
+    const compiled: CompiledItem[] = [{ name: "creatine monohydrate", status: "candidate" }];
+    const output: ClaudeToolOutput = {
+      items: [item({ reason: "supports build muscle per multiple human RCTs." })],
+    };
+    const result = assembleReports(compiled, output);
+    expect(result.items[0]!.reason).toBe("Supports build muscle per multiple human RCTs.");
   });
 });

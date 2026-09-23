@@ -63,6 +63,18 @@ export function validateStructure(
         };
       }
     }
+
+    // Rule 11: the reason must explicitly name the goal it's judged against,
+    // not leave the reader to infer it. Fall back to the full goal list for
+    // Insufficient-evidence items, whose goalsAddressed is typically empty.
+    const goalsToName = out.goalsAddressed.length > 0 ? out.goalsAddressed : goals;
+    const reasonLower = out.reason.toLowerCase();
+    if (!goalsToName.some((g) => reasonLower.includes(g.toLowerCase()))) {
+      return {
+        ok: false,
+        message: `Item "${out.name}"'s reason does not explicitly name the goal it's judged against (expected one of: ${goalsToName.join(", ")}).`,
+      };
+    }
   }
 
   if (seen.size !== compiledItems.length) {
@@ -73,19 +85,38 @@ export function validateStructure(
 }
 
 const DIET_PATTERN = /\bdiet(ary|s)?\b/i;
-// Best-effort list of common supplement/vitamin brand names. Not exhaustive;
-// this is a flag-and-log guard, not a guarantee (see PLAN.md step 6).
+// Best-effort list of common supplement/vitamin brand names. Not exhaustive
+// (see PLAN.md step 6), but any hit here is a hard failure, not a log line.
 const BRAND_PATTERN =
   /\b(optimum nutrition|gnc|now foods|nature made|thorne|life extension|garden of life|nordic naturals|kirkland|centrum|nutricost|bulk supplements|transparent labs)\b/i;
 
-function flagContentGuard(item: ClaudeItemOutput): void {
-  const text = `${item.reason} ${item.mechanism} ${item.evidenceType}`;
-  if (DIET_PATTERN.test(text)) {
-    console.warn(`content guard: "diet" mentioned for item "${item.name}"`);
+// Rule 6: no diet/brand mentions in reason, mechanism, or evidenceType. This
+// is a structural check like validateStructure — a hit triggers the one
+// allowed retry in claude.ts instead of silently shipping the violation
+// (e.g. a live "...in individuals with adequate diet." reason).
+export function checkContentGuard(output: ClaudeToolOutput): StructureCheckResult {
+  for (const item of output.items) {
+    const text = `${item.reason} ${item.mechanism} ${item.evidenceType}`;
+    if (DIET_PATTERN.test(text)) {
+      return { ok: false, message: `Item "${item.name}" mentions "diet" in reason, mechanism, or evidenceType — not allowed.` };
+    }
+    if (BRAND_PATTERN.test(text)) {
+      return {
+        ok: false,
+        message: `Item "${item.name}" mentions a brand/product name in reason, mechanism, or evidenceType — not allowed.`,
+      };
+    }
   }
-  if (BRAND_PATTERN.test(text)) {
-    console.warn(`content guard: possible brand name mentioned for item "${item.name}"`);
-  }
+  return { ok: true };
+}
+
+// Rule 11: normalize capitalization deterministically rather than retrying
+// for it — cheap, safe, and never worth burning an API call over.
+function capitalizeFirstLetter(text: string): string {
+  const match = text.match(/[a-zA-Z]/);
+  if (!match) return text;
+  const index = text.indexOf(match[0]);
+  return text.slice(0, index) + match[0].toUpperCase() + text.slice(index + 1);
 }
 
 // Step 7 (part 2): deterministic overrides the model doesn't get to negotiate.
@@ -115,7 +146,6 @@ export function assembleReports(compiledItems: CompiledItem[], output: ClaudeToo
 
   const items: ItemReport[] = compiledItems.map((compiled) => {
     const raw = byKey.get(compiled.name.toLowerCase())!;
-    flagContentGuard(raw);
     const corrected = applyOverrides(raw);
     return {
       name: compiled.name,
@@ -125,7 +155,7 @@ export function assembleReports(compiledItems: CompiledItem[], output: ClaudeToo
       goalsAddressed: corrected.goalsAddressed,
       evidenceType: corrected.evidenceType,
       budgetFlag: corrected.budgetFlag,
-      reason: corrected.reason,
+      reason: capitalizeFirstLetter(corrected.reason),
       mechanism: corrected.mechanism,
     };
   });

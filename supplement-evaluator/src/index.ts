@@ -1,6 +1,6 @@
 import { ZodError } from "zod";
 import { assembleReports } from "./assemble";
-import { ClaudeCallError, ClaudeValidationError, DEFAULT_MODEL, evaluateWithClaude } from "./claude";
+import { ClaudeCallError, ClaudeValidationError, evaluateWithClaude, resolveModel } from "./claude";
 import type { Env } from "./env";
 import { findFirstVagueGoal } from "./goals";
 import { compileItems } from "./items";
@@ -47,7 +47,7 @@ async function handleEvaluate(request: Request, env: Env): Promise<Response> {
   }
 
   try {
-    const claudeOutput = await evaluateWithClaude(env.NVIDIA_API_KEY, env.MODEL ?? DEFAULT_MODEL, intake, items);
+    const claudeOutput = await evaluateWithClaude(env.NVIDIA_API_KEY, resolveModel(env.MODEL), intake, items);
     const evaluation = assembleReports(items, claudeOutput);
     return json(evaluation, 200);
   } catch (error) {
