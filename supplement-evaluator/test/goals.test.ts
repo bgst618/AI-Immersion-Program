@@ -15,6 +15,15 @@ describe("checkGoal", () => {
     }
   });
 
+  it("rejects a bare or generic 'better', but not 'better' attached to a specific target", () => {
+    for (const goal of ["feel better", "feeling better", "get better", "better", "a better me", "live better"]) {
+      expect(checkGoal(goal).vague, goal).toBe(true);
+    }
+    for (const goal of ["sleep better", "recover better between sessions", "focus better at work", "better sleep quality"]) {
+      expect(checkGoal(goal).vague, goal).toBe(false);
+    }
+  });
+
   it("does not reject specific goals that merely contain a stem mid-word", () => {
     expect(checkGoal("reduce swelling").vague).toBe(false);
     expect(checkGoal("reduce knee swelling after runs").vague).toBe(false);

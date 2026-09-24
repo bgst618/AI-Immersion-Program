@@ -3,14 +3,17 @@
 // Stems match at the start of a word with any ending, so "health" also catches
 // "healthy"/"healthier" and "well" catches "wellness"/"well-being" — exact
 // words let "get healthy" through (red-team #6). Word-start only, so
-// "reduce swelling" is not caught by "well".
+// "reduce swelling" is not caught by "well". "better" is only vague with
+// nothing specific attached ("feel better", "be better"); "sleep better" and
+// "recover better" name a testable target and pass.
 // Keep in sync with VAGUE_PATTERNS in public/app.js.
 const VAGUE_PATTERNS: RegExp[] = [
   /\bhealth/i,
   /\bwell/i,
   /\boverall/i,
   /\bgeneral/i,
-  /\bbetter/i,
+  /\b(feel|be|get|do|live|look)(ing)?\s+better\b/i,
+  /^\s*(a\s+)?better(\s+(me|myself|life|living|overall))?\s*$/i,
   /\blongevity/i,
   /\blifespan/i,
   /\bliv(e|ing) long/i,
