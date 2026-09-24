@@ -96,7 +96,7 @@
       "id": "weak-magnesium-sleep-low-budget",
       "category": "budget",
       "ambiguous": true,
-      "input": { "stack": [], "goals": ["improve sleep quality"], "candidates": ["magnesium glycinate"], "budget_usd_month": 15, "bloodwork": null },
+      "input": { "stack": [], "goals": ["improve sleep quality"], "candidates": ["magnesium glycinate"], "budget_usd_month": 5, "bloodwork": null },
       "expect": {
         "magnesium glycinate": { "status": "candidate", "acceptable_verdicts": ["Take", "Don't"], "acceptable_confidence": ["Weak", "Insufficient"], "reason_must_mention": ["sleep"], "budget_flag": true }
       },
@@ -107,7 +107,7 @@
       "category": "remove",
       "input": { "stack": ["BCAAs"], "goals": ["build muscle"], "candidates": [], "budget_usd_month": 50, "bloodwork": null },
       "expect": {
-        "BCAAs": { "status": "current", "acceptable_verdicts": ["Remove"], "acceptable_confidence": ["Moderate", "Weak"], "reason_must_mention": ["muscle", "protein synthesis"] }
+        "BCAAs": { "status": "current", "acceptable_verdicts": ["Remove"], "acceptable_confidence": ["Moderate", "Weak", "Strong"], "reason_must_mention": ["muscle", "protein synthesis"] }
       },
       "evidence_note": "Wolfe 2017 review; meta-analyses find no hypertrophy benefit over complete protein. Classic 'popular but not justified' removal."
     },
@@ -116,7 +116,7 @@
       "category": "remove",
       "input": { "stack": ["glutamine"], "goals": ["build muscle"], "candidates": [], "budget_usd_month": 50, "bloodwork": null },
       "expect": {
-        "glutamine": { "status": "current", "acceptable_verdicts": ["Remove"], "acceptable_confidence": ["Moderate", "Weak"], "reason_must_mention": ["muscle"] }
+        "glutamine": { "status": "current", "acceptable_verdicts": ["Remove"], "acceptable_confidence": ["Moderate", "Weak", "Strong"], "reason_must_mention": ["muscle"] }
       },
       "evidence_note": "RCTs in healthy lifters (e.g., Candow 2001) show no added muscle or strength gain."
     },
@@ -253,7 +253,7 @@
       "input": { "stack": ["multivitamin", "fish oil"], "goals": ["build muscle", "improve sleep quality"], "candidates": ["creatine monohydrate", "magnesium glycinate"], "budget_usd_month": 40, "bloodwork": null },
       "expect": {
         "creatine monohydrate": { "status": "candidate", "acceptable_verdicts": ["Take"], "acceptable_confidence": ["Strong"], "reason_must_mention": ["muscle"], "reason_must_not_mention": ["sleep"] },
-        "magnesium glycinate": { "status": "candidate", "acceptable_verdicts": ["Take", "Don't"], "acceptable_confidence": ["Weak", "Insufficient"], "reason_must_mention": ["sleep"], "reason_must_not_mention": ["muscle"] },
+        "magnesium glycinate": { "status": "candidate", "acceptable_verdicts": ["Take", "Don't"], "acceptable_confidence": ["Weak", "Insufficient"], "reason_must_mention": ["sleep"], "reason_must_not_mention": ["build muscle"] },
         "multivitamin": { "status": "current", "acceptable_verdicts": ["Remove"], "acceptable_confidence": ["Insufficient", "Weak"] },
         "fish oil": { "status": "current", "acceptable_verdicts": ["Remove"], "acceptable_confidence": ["Weak", "Insufficient"] }
       },

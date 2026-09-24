@@ -166,10 +166,10 @@ const CONFIDENCE_CLASS = {
 // Confidence means how sure we are in the verdict, based on evidence
 // strength for that verdict — not whether the evidence shows a benefit.
 const CONFIDENCE_EXPLANATION = {
-  Strong: "Multiple well-powered human studies consistently support this verdict, for or against.",
-  Moderate: "Some human evidence supports this verdict, though less extensive or consistent.",
-  Weak: "Only small, few, or low-quality human studies address this verdict either way.",
-  "Insufficient evidence to rate": "No meaningful human evidence exists yet for this goal.",
+  Strong: "Multiple independent trials or meta-analyses consistently support this verdict, for or against.",
+  Moderate: "Human trials point this way, but they're small, few, or industry-funded.",
+  Weak: "Human evidence exists but is low quality or inconsistent.",
+  "Insufficient evidence to rate": "Little or no human research exists on this ingredient for this goal.",
 };
 
 const POSITIVE_VERDICTS = new Set(["Keep", "Take"]);

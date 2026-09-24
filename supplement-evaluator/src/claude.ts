@@ -5,7 +5,12 @@ import { ClaudeToolOutputSchema, type ClaudeToolOutput, markerLabel, markerUnit 
 // NVIDIA's build.nvidia.com endpoint is OpenAI-compatible (Chat Completions API).
 const NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 const MAX_TOKENS = 4000;
+const TEMPERATURE = 0;
 const TOOL_NAME = "submit_evaluation";
+
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503]);
+const MAX_TRANSIENT_RETRIES = 2;
+const TRANSIENT_BACKOFF_BASE_MS = 1000;
 
 // meta/llama-3.1-70b-instruct was retired from NVIDIA's catalog; this has
 // reliable, well-documented function/tool calling support. Override without
@@ -100,13 +105,13 @@ function buildSystemPrompt(): string {
 
 Rules:
 1. Treat each item independently. Evaluate it only against the user's listed goals — ignore any goal it has no plausible relevance to.
-2. Use human evidence only. If an ingredient is niche, animal-only, or has thin human data for the relevant goal, set isMainstreamHumanTested=false and confidence="Insufficient evidence to rate".
-3. Name the evidence type in "reason" (e.g. "multiple human RCTs", "limited human data", "animal studies only") and pick confidence with this fixed rubric. Confidence means how confident we are in the VERDICT, based on the strength of the human evidence for that verdict — not whether the evidence shows a benefit. Strong evidence that something does NOT work supports Strong or Moderate confidence just as well as strong evidence that it does. Weak/Insufficient are for when the evidence itself is thin or absent, never merely because the answer is "no":
-   - Strong: multiple well-powered human RCTs / meta-analyses consistently support this verdict for this goal, whether that means a clear benefit or a clear lack of one.
-   - Moderate: some human RCTs support this verdict, or the evidence leans clearly one way despite being less extensive.
-   - Weak: only small, few, or low-quality human studies address this verdict either way.
-   - Insufficient evidence to rate: no meaningful human evidence exists at all for THIS goal — not enough to confidently say it helps OR that it doesn't.
-   Example: multiple solid RCTs showing an ingredient has no effect on a goal is Strong or Moderate confidence in a Remove/Don't verdict, not Weak.
+2. Use human evidence only. If an ingredient is niche or has been studied only in animals/cells, set isMainstreamHumanTested=false and confidence="Insufficient evidence to rate".
+3. Name the evidence type in "reason" (e.g. "multiple independent RCTs", "a few small industry-funded trials", "animal studies only") and pick confidence with this fixed rubric. Confidence means how confident we are in the VERDICT, based on the quality and quantity of human evidence behind it — for or against:
+   - Strong: multiple independent RCTs or meta-analyses show a consistent, meaningful result for this goal — either a clear benefit (Keep/Take) or a clear lack of benefit (Remove/Don't). Nothing less qualifies.
+   - Moderate: human RCTs point the same way but the evidence is limited — trials are small, few, or mostly industry-funded, or effects are modest. Small, few, or industry-funded trials CAP at Moderate no matter how positive their results look.
+   - Weak: human evidence exists but is low quality or inconsistent (e.g. observational data only, tiny pilot studies, conflicting results).
+   - Insufficient evidence to rate: little or no human research exists on THIS ingredient for THIS goal.
+   Keep "Insufficient" and "evidence of no effect" strictly separate. If human studies of this ingredient for this goal exist and show no meaningful benefit, that is NOT Insufficient — it is evidence of no effect: verdict Remove/Don't with Moderate or Strong confidence (per the rubric above). Use Insufficient only when the studies themselves are largely missing.
 4. Use blood work only when a marker is directly relevant to an item (e.g. low vitamin D supports a vitamin D verdict). Cite the specific value in "reason" when you use it.
 5. Budget rule: the user's budget is an ingredient-level estimate, not product pricing. Estimate a typical monthly ingredient-level cost range for each item. If the total estimated cost of everything with a Keep/Take-leaning verdict would exceed the user's stated budget, the items with the weakest evidence (Weak or Insufficient evidence to rate) are the first to be flagged Remove/Don't. When budget was the deciding factor for an item's verdict, set budgetFlag=true on that item and say so in "reason"; otherwise set budgetFlag=false.
 6. Never mention brand names, product names, or diet/dietary advice — not the user's diet, not "if you eat enough X", nothing. This applies to "reason" AND "mechanism" AND "evidenceType" equally; a mention in any of those three fields is a failure.
@@ -147,6 +152,10 @@ interface OpenAIMessage {
 }
 
 export class ClaudeCallError extends Error {}
+// Upstream hiccups worth retrying (overloaded/rate-limited API, or a response
+// that simply omitted the forced tool call). Subclass so callers that only
+// know ClaudeCallError still map an exhausted retry to "upstream_error".
+export class TransientModelError extends ClaudeCallError {}
 export class ClaudeValidationError extends Error {
   constructor(message: string) {
     super(message);
@@ -163,7 +172,7 @@ async function callNvidia(apiKey: string, model: string, messages: OpenAIMessage
     body: JSON.stringify({
       model,
       max_tokens: MAX_TOKENS,
-      temperature: 0.2,
+      temperature: TEMPERATURE,
       messages,
       tools: [TOOL_DEFINITION],
       tool_choice: { type: "function", function: { name: TOOL_NAME } },
@@ -172,7 +181,8 @@ async function callNvidia(apiKey: string, model: string, messages: OpenAIMessage
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    throw new ClaudeCallError(`NVIDIA API error ${response.status}: ${body}`);
+    const ErrorClass = RETRYABLE_STATUSES.has(response.status) ? TransientModelError : ClaudeCallError;
+    throw new ErrorClass(`NVIDIA API error ${response.status}: ${body}`);
   }
 
   return response.json();
@@ -182,7 +192,7 @@ function extractToolCall(apiResponse: any): { id: string; rawArguments: string; 
   const toolCalls = apiResponse?.choices?.[0]?.message?.tool_calls ?? [];
   const call = toolCalls.find((tc: any) => tc.type === "function" && tc.function?.name === TOOL_NAME);
   if (!call) {
-    throw new ClaudeCallError("Model response did not include the expected tool call");
+    throw new TransientModelError("Model response did not include the expected tool call");
   }
   let input: unknown;
   try {
@@ -191,6 +201,20 @@ function extractToolCall(apiResponse: any): { id: string; rawArguments: string; 
     throw new ClaudeCallError(`Model tool call arguments were not valid JSON: ${(error as Error).message}`);
   }
   return { id: call.id, rawArguments: call.function.arguments, input };
+}
+
+// One logical model turn: call + extract the tool call, retrying transient
+// failures with exponential backoff (1s, 2s). Independent of the one
+// validation retry in evaluateWithClaude, which only fires on bad content.
+async function requestToolCall(apiKey: string, model: string, messages: OpenAIMessage[]) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return extractToolCall(await callNvidia(apiKey, model, messages));
+    } catch (error) {
+      if (!(error instanceof TransientModelError) || attempt >= MAX_TRANSIENT_RETRIES) throw error;
+      await new Promise((resolve) => setTimeout(resolve, TRANSIENT_BACKOFF_BASE_MS * 2 ** attempt));
+    }
+  }
 }
 
 function validate(
@@ -226,8 +250,7 @@ export async function evaluateWithClaude(
     { role: "user", content: buildUserMessage(intake, items) },
   ];
 
-  const first = await callNvidia(apiKey, model, messages);
-  const firstCall = extractToolCall(first);
+  const firstCall = await requestToolCall(apiKey, model, messages);
   const firstResult = validate(items, intake.goals, firstCall.input);
   if (firstResult.ok) return firstResult.data;
 
@@ -246,8 +269,7 @@ export async function evaluateWithClaude(
     },
   ];
 
-  const second = await callNvidia(apiKey, model, retryMessages);
-  const secondCall = extractToolCall(second);
+  const secondCall = await requestToolCall(apiKey, model, retryMessages);
   const secondResult = validate(items, intake.goals, secondCall.input);
   if (secondResult.ok) return secondResult.data;
 

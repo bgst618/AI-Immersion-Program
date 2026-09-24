@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ClaudeValidationError, DEFAULT_MODEL, evaluateWithClaude, resolveModel } from "../src/claude";
+import {
+  ClaudeCallError,
+  ClaudeValidationError,
+  DEFAULT_MODEL,
+  TransientModelError,
+  evaluateWithClaude,
+  resolveModel,
+} from "../src/claude";
 import type { CompiledItem, Intake } from "../src/schema";
 
 const intake: Intake = {
@@ -109,14 +116,87 @@ describe("evaluateWithClaude", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("throws ClaudeCallError if the model response has no tool call", async () => {
-    (fetch as any).mockResolvedValueOnce(
-      jsonResponse({ choices: [{ message: { role: "assistant", content: "I cannot help with that." } }] }),
-    );
+  it("sends temperature 0", async () => {
+    (fetch as any).mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [validItem] })));
 
-    await expect(evaluateWithClaude("fake-key", DEFAULT_MODEL, intake, items)).rejects.toThrow(
-      "did not include the expected tool call",
-    );
+    await evaluateWithClaude("fake-key", DEFAULT_MODEL, intake, items);
+    const body = JSON.parse((fetch as any).mock.calls[0][1].body);
+    expect(body.temperature).toBe(0);
+  });
+
+  describe("transient errors", () => {
+    const noToolCall = () =>
+      jsonResponse({ choices: [{ message: { role: "assistant", content: "I cannot help with that." } }] });
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    for (const status of [429, 500, 502, 503]) {
+      it(`retries a ${status} and succeeds`, async () => {
+        (fetch as any)
+          .mockResolvedValueOnce(jsonResponse({ error: "busy" }, status))
+          .mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [validItem] })));
+
+        const pending = evaluateWithClaude("fake-key", DEFAULT_MODEL, intake, items);
+        await vi.runAllTimersAsync();
+        const result = await pending;
+        expect(result.items[0]!.verdict).toBe("Take");
+        expect(fetch).toHaveBeenCalledTimes(2);
+      });
+    }
+
+    it("retries a response with no tool call and succeeds", async () => {
+      (fetch as any)
+        .mockResolvedValueOnce(noToolCall())
+        .mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [validItem] })));
+
+      const pending = evaluateWithClaude("fake-key", DEFAULT_MODEL, intake, items);
+      await vi.runAllTimersAsync();
+      expect((await pending).items[0]!.name).toBe("creatine monohydrate");
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("gives up after 2 retries (3 attempts) with a TransientModelError", async () => {
+      (fetch as any)
+        .mockResolvedValueOnce(jsonResponse({ error: "busy" }, 503))
+        .mockResolvedValueOnce(noToolCall())
+        .mockResolvedValueOnce(jsonResponse({ error: "busy" }, 429));
+
+      const assertion = expect(evaluateWithClaude("fake-key", DEFAULT_MODEL, intake, items)).rejects.toBeInstanceOf(
+        TransientModelError,
+      );
+      await vi.runAllTimersAsync();
+      await assertion;
+      expect(fetch).toHaveBeenCalledTimes(3);
+    });
+
+    it("does not retry a non-transient error like 400", async () => {
+      (fetch as any).mockResolvedValueOnce(jsonResponse({ error: "bad request" }, 400));
+
+      const assertion = expect(evaluateWithClaude("fake-key", DEFAULT_MODEL, intake, items)).rejects.toSatisfy(
+        (error: unknown) => error instanceof ClaudeCallError && !(error instanceof TransientModelError),
+      );
+      await vi.runAllTimersAsync();
+      await assertion;
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("retries transient errors independently on the validation-retry call", async () => {
+      (fetch as any)
+        .mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [{ ...validItem, verdict: "MAYBE" }] })))
+        .mockResolvedValueOnce(jsonResponse({ error: "busy" }, 502))
+        .mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [validItem] })));
+
+      const pending = evaluateWithClaude("fake-key", DEFAULT_MODEL, intake, items);
+      await vi.runAllTimersAsync();
+      expect((await pending).items[0]!.verdict).toBe("Take");
+      expect(fetch).toHaveBeenCalledTimes(3);
+    });
   });
 
   it("retries once when a diet mention slips into the mechanism, then succeeds", async () => {

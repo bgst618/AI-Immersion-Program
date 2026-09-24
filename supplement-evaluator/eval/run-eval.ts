@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assembleReports } from "../src/assemble";
-import { ClaudeCallError, evaluateWithClaude, resolveModel } from "../src/claude";
+import { evaluateWithClaude, resolveModel } from "../src/claude";
 import { compileItems } from "../src/items";
 import {
   IntakeSchema,
@@ -191,20 +191,6 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T,
   return results;
 }
 
-async function withTransientRetry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      return await fn();
-    } catch (error) {
-      lastError = error;
-      if (!(error instanceof ClaudeCallError) || attempt === retries) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
-    }
-  }
-  throw lastError;
-}
-
 // --- Running cases ---------------------------------------------------------
 
 type RunResult = { ok: true; items: ItemReport[] } | { ok: false; error: string };
@@ -222,10 +208,10 @@ interface Task {
 
 async function runOne(task: Task, apiKey: string, model: string): Promise<RunResult> {
   try {
-    const output = await withTransientRetry(async () => {
-      await waitForRateLimitSlot();
-      return evaluateWithClaude(apiKey, model, task.intake, task.items);
-    });
+    // Transient-error retries (429/5xx, missing tool call) happen inside
+    // evaluateWithClaude, shared with the Worker, so none are layered here.
+    await waitForRateLimitSlot();
+    const output = await evaluateWithClaude(apiKey, model, task.intake, task.items);
     const evaluation = assembleReports(task.items, output);
     return { ok: true, items: evaluation.items };
   } catch (error) {
