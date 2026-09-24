@@ -344,7 +344,7 @@ const VERDICT_LABEL = { Remove: "Not needed for your goals" };
 
 // Plain web search for the ingredient name only — never a product or store.
 function ingredientSearchUrl(name) {
-  return `https://duckduckgo.com/?q=${encodeURIComponent(name)}`;
+  return `https://www.google.com/search?q=${encodeURIComponent(name)}`;
 }
 
 function buildBuyingNote(name) {
