@@ -250,7 +250,13 @@ function hazardReport(compiled: CompiledItem, hazard: Hazard): ItemReport {
     budgetFlag: false,
     reason: `Known hazard, whatever your goals: ${hazard.name} is not a supplement. ${hazard.hazard} Do not take it.`,
     mechanism: hazard.mechanism,
+    ...mergedNames(compiled),
   };
+}
+
+// Synonyms items.ts merged into this item, so the report shows them.
+function mergedNames(compiled: CompiledItem): Pick<ItemReport, "alsoSubmittedAs"> {
+  return compiled.alsoSubmittedAs ? { alsoSubmittedAs: compiled.alsoSubmittedAs } : {};
 }
 
 // Blood work already at/above target (bloodwork.ts): a Keep/Take can't be
@@ -290,6 +296,7 @@ export function assembleReports(
       budgetFlag: corrected.budgetFlag,
       reason: capitalizeFirstLetter(corrected.reason),
       mechanism: corrected.mechanism,
+      ...mergedNames(compiled),
     };
   });
 

@@ -390,6 +390,12 @@ function buildCard(item) {
 
   header.append(title, chip);
 
+  // Synonyms merged into this item by the server (e.g. cholecalciferol -> vitamin D3).
+  const alsoEntered = (item.alsoSubmittedAs || []).map((a) => `${a.name} (${a.status})`);
+  const alsoEl = document.createElement("p");
+  alsoEl.className = "also-entered";
+  alsoEl.textContent = `Also entered as: ${alsoEntered.join(", ")}`;
+
   const verdict = document.createElement("p");
   verdict.className = `verdict ${POSITIVE_VERDICTS.has(item.verdict) ? "positive" : "negative"}`;
   const labels = item.confidence === "Known hazard" ? HAZARD_VERDICT_LABEL : VERDICT_LABEL;
@@ -425,7 +431,9 @@ function buildCard(item) {
   const mechanism = document.createElement("p");
   mechanism.textContent = item.mechanism;
 
-  card.append(header, verdict, ...badgeRow, confidenceExplainer, reasonLabel, reason, mechanismLabel, mechanism);
+  card.append(header);
+  if (alsoEntered.length > 0) card.appendChild(alsoEl);
+  card.append(verdict, ...badgeRow, confidenceExplainer, reasonLabel, reason, mechanismLabel, mechanism);
   if (item.verdict === "Take") card.appendChild(buildBuyingNote(item.name));
   return card;
 }

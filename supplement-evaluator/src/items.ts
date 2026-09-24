@@ -1,34 +1,41 @@
-import { INGREDIENTS } from "./catalog";
+import { INGREDIENTS, findIngredient, normalizeTerm } from "./catalog";
 import { HAZARDS } from "./hazards";
 import { KNOWN_INGREDIENTS } from "./ingredients-known";
 import type { CompiledItem } from "./schema";
 
 // Step 2: build the deduped item list the model will evaluate, with stable ids.
-// - stack entries dedupe case-insensitively against each other.
-// - candidate entries dedupe case-insensitively against each other AND against
-//   the stack: if the user already takes it, it's "current", not a candidate.
+// - entries dedupe on their catalog standard name, so synonyms merge
+//   ("cholecalciferol" -> vitamin D3, "omega-3" -> fish oil); unknown names
+//   dedupe case-insensitively.
+// - stack entries come first, so a candidate the user already takes is
+//   "current", not a candidate. A merged-away synonym is kept on the item as
+//   `alsoSubmittedAs` (with its original status) so the report can show it.
 // - items that don't resemble any known ingredient are flagged `unrecognized`
 //   so the model must confirm the substance exists before rating it (rule 15).
 export function compileItems(stack: string[], candidates: string[]): CompiledItem[] {
   const items: CompiledItem[] = [];
-  const seen = new Set<string>();
+  const byKey = new Map<string, CompiledItem>();
 
-  for (const raw of stack) {
+  function add(raw: string, status: CompiledItem["status"]) {
     const name = raw.trim();
-    const key = name.toLowerCase();
-    if (!name || seen.has(key)) continue;
-    seen.add(key);
-    items.push(withRecognition({ id: `item_${items.length + 1}`, name, status: "current" }));
+    if (!name) return;
+    const key = normalizeTerm(findIngredient(name)?.name ?? name);
+    const existing = byKey.get(key);
+    if (existing) {
+      // Same text typed twice is just a duplicate; a different name is a synonym worth showing.
+      const merged = [existing.name, ...(existing.alsoSubmittedAs ?? []).map((a) => a.name)];
+      if (!merged.some((n) => normalizeTerm(n) === normalizeTerm(name))) {
+        existing.alsoSubmittedAs = [...(existing.alsoSubmittedAs ?? []), { name, status }];
+      }
+      return;
+    }
+    const item = withRecognition({ id: `item_${items.length + 1}`, name, status });
+    byKey.set(key, item);
+    items.push(item);
   }
 
-  for (const raw of candidates) {
-    const name = raw.trim();
-    const key = name.toLowerCase();
-    if (!name || seen.has(key)) continue;
-    seen.add(key);
-    items.push(withRecognition({ id: `item_${items.length + 1}`, name, status: "candidate" }));
-  }
-
+  for (const raw of stack) add(raw, "current");
+  for (const raw of candidates) add(raw, "candidate");
   return items;
 }
 

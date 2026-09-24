@@ -376,6 +376,22 @@ describe("blood-work cap (marker already at/above target)", () => {
   });
 });
 
+describe("merged synonyms in the report (red-team #7)", () => {
+  it("carries alsoSubmittedAs through to the item report, and omits it when nothing merged", () => {
+    const compiled: CompiledItem[] = [
+      { id: "item_1", name: "vitamin D3", status: "current", alsoSubmittedAs: [{ name: "cholecalciferol", status: "candidate" }] },
+      { id: "item_2", name: "creatine monohydrate", status: "candidate" },
+    ];
+    const output: ClaudeToolOutput = {
+      suggestions: [],
+      items: [item({ status: "current", verdict: "Keep", confidence: "Moderate" }), item({ id: "item_2" })],
+    };
+    const [vitD, creatine] = assembleReports(compiled, output).items;
+    expect(vitD!.alsoSubmittedAs).toEqual([{ name: "cholecalciferol", status: "candidate" }]);
+    expect(creatine).not.toHaveProperty("alsoSubmittedAs");
+  });
+});
+
 describe("known-hazard override", () => {
   const goals = ["lose body fat"];
 

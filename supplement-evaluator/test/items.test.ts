@@ -26,6 +26,38 @@ describe("compileItems", () => {
   });
 });
 
+describe("synonym merge (red-team #7)", () => {
+  it("merges vitamin D3 (current) and cholecalciferol (candidate) into one current item, keeping both visible", () => {
+    expect(compileItems(["vitamin D3"], ["cholecalciferol"])).toEqual([
+      { id: "item_1", name: "vitamin D3", status: "current", alsoSubmittedAs: [{ name: "cholecalciferol", status: "candidate" }] },
+    ]);
+  });
+
+  it("merges the other common aliases: B12/cobalamin, fish oil/omega-3", () => {
+    expect(compileItems(["B12", "fish oil"], ["cobalamin", "omega-3"])).toEqual([
+      { id: "item_1", name: "B12", status: "current", alsoSubmittedAs: [{ name: "cobalamin", status: "candidate" }] },
+      { id: "item_2", name: "fish oil", status: "current", alsoSubmittedAs: [{ name: "omega-3", status: "candidate" }] },
+    ]);
+  });
+
+  it("merges synonyms within the same list and keeps ids sequential", () => {
+    expect(compileItems(["cholecalciferol", "vit d", "magnesium glycinate"], [])).toEqual([
+      { id: "item_1", name: "cholecalciferol", status: "current", alsoSubmittedAs: [{ name: "vit d", status: "current" }] },
+      { id: "item_2", name: "magnesium glycinate", status: "current" },
+    ]);
+  });
+
+  it("merges two candidate synonyms into one candidate", () => {
+    const items = compileItems([], ["vitamin D3", "cholecalciferol"]);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.status).toBe("candidate");
+  });
+
+  it("doesn't list the same text typed twice as a synonym", () => {
+    expect(compileItems(["Vitamin D3"], ["vitamin d3"])).toEqual([{ id: "item_1", name: "Vitamin D3", status: "current" }]);
+  });
+});
+
 describe("ingredient recognition pre-check (red-team #4)", () => {
   it("flags a made-up ingredient as unrecognized, leaving known ones unflagged", () => {
     expect(compileItems(["fish oil"], ["zorbitrex-9"])).toEqual([

@@ -82,6 +82,9 @@ export type BloodWorkEntry = z.infer<typeof BloodWorkEntrySchema>;
 export const ItemStatusSchema = z.enum(["current", "candidate"]);
 export type ItemStatus = z.infer<typeof ItemStatusSchema>;
 
+// A synonym merged into an item (red-team #7), e.g. candidate "cholecalciferol" -> current "vitamin D3".
+export const SubmittedNameSchema = z.object({ name: z.string(), status: ItemStatusSchema });
+
 // Step 2 output: the compiled, deduped item list handed to the model. `id` is
 // the only key the model has to echo back; `name` is the user's original
 // input, restored onto the final report no matter how the model renames it.
@@ -91,6 +94,8 @@ export const CompiledItemSchema = z.object({
   status: ItemStatusSchema,
   // Set by items.ts when the name matches no known ingredient (red-team #4).
   unrecognized: z.literal(true).optional(),
+  // Synonyms merged into this item by items.ts, with the status each was entered under.
+  alsoSubmittedAs: z.array(SubmittedNameSchema).optional(),
 });
 export type CompiledItem = z.infer<typeof CompiledItemSchema>;
 
@@ -158,6 +163,7 @@ export const ItemReportSchema = z.object({
   budgetFlag: z.boolean(),
   reason: z.string(),
   mechanism: z.string(),
+  alsoSubmittedAs: z.array(SubmittedNameSchema).optional(),
 });
 export type ItemReport = z.infer<typeof ItemReportSchema>;
 
