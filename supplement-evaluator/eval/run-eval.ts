@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assembleReports } from "../src/assemble";
-import { ClaudeCallError, DEFAULT_MODEL, evaluateWithClaude } from "../src/claude";
+import { ClaudeCallError, evaluateWithClaude, resolveModel } from "../src/claude";
 import { compileItems } from "../src/items";
 import {
   IntakeSchema,
@@ -52,8 +52,11 @@ function loadApiKey(): string {
   return key;
 }
 
-function resolveModel(): string {
-  return process.env.MODEL ?? readDevVar("MODEL") ?? DEFAULT_MODEL;
+function resolveModelFromEnv(): string {
+  // resolveModel() (src/claude.ts) treats a blank string as unset too, so a
+  // blank workflow_dispatch `model` input (which arrives as MODEL="") falls
+  // through to .dev.vars and then DEFAULT_MODEL instead of being sent as-is.
+  return resolveModel(process.env.MODEL || readDevVar("MODEL"));
 }
 
 // --- eval-cases.json types ----------------------------------------------
@@ -424,7 +427,7 @@ function resolveCases(): RawCase[] {
 
 async function main() {
   const apiKey = loadApiKey();
-  const model = resolveModel();
+  const model = resolveModelFromEnv();
   const runsPerCase = resolveRunsPerCase();
   const cases = resolveCases();
 

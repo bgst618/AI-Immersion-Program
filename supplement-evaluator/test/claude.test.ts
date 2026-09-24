@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ClaudeValidationError, DEFAULT_MODEL, evaluateWithClaude } from "../src/claude";
+import { ClaudeValidationError, DEFAULT_MODEL, evaluateWithClaude, resolveModel } from "../src/claude";
 import type { CompiledItem, Intake } from "../src/schema";
 
 const intake: Intake = {
@@ -117,5 +117,54 @@ describe("evaluateWithClaude", () => {
     await expect(evaluateWithClaude("fake-key", DEFAULT_MODEL, intake, items)).rejects.toThrow(
       "did not include the expected tool call",
     );
+  });
+
+  it("retries once when a diet mention slips into the mechanism, then succeeds", async () => {
+    const dietyOutput = {
+      ...validItem,
+      mechanism: "May offer modest benefit in individuals with adequate diet.",
+    };
+
+    (fetch as any)
+      .mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [dietyOutput] })))
+      .mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [validItem] })));
+
+    const result = await evaluateWithClaude("fake-key", DEFAULT_MODEL, intake, items);
+    expect(result.items[0]!.mechanism).not.toMatch(/diet/i);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws ClaudeValidationError if a diet mention survives both attempts", async () => {
+    const dietyOutput = {
+      ...validItem,
+      mechanism: "May offer modest benefit in individuals with adequate diet.",
+    };
+
+    (fetch as any)
+      .mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [dietyOutput] })))
+      .mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [dietyOutput] })));
+
+    await expect(evaluateWithClaude("fake-key", DEFAULT_MODEL, intake, items)).rejects.toBeInstanceOf(
+      ClaudeValidationError,
+    );
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("resolveModel", () => {
+  it("returns the candidate when it's a non-empty string", () => {
+    expect(resolveModel("some/other-model")).toBe("some/other-model");
+  });
+
+  it("falls back to DEFAULT_MODEL for an empty string", () => {
+    expect(resolveModel("")).toBe(DEFAULT_MODEL);
+  });
+
+  it("falls back to DEFAULT_MODEL for a whitespace-only string", () => {
+    expect(resolveModel("   ")).toBe(DEFAULT_MODEL);
+  });
+
+  it("falls back to DEFAULT_MODEL for undefined", () => {
+    expect(resolveModel(undefined)).toBe(DEFAULT_MODEL);
   });
 });
