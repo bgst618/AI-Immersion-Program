@@ -212,7 +212,7 @@
       "id": "pair-vitd-low",
       "category": "bloodwork_flip",
       "pair_id": "vitd-bloodwork",
-      "input": { "stack": [], "goals": ["improve bone health"], "candidates": ["vitamin D3"], "budget_usd_month": 20, "bloodwork": { "vitamin_d_25oh": "low" } },
+      "input": { "stack": [], "goals": ["maintain bone density"], "candidates": ["vitamin D3"], "budget_usd_month": 20, "bloodwork": { "vitamin_d_25oh": "low" } },
       "expect": {
         "vitamin D3": { "status": "candidate", "acceptable_verdicts": ["Take"], "acceptable_confidence": ["Moderate", "Strong"], "reason_must_mention": ["bone", "deficien", "low"] }
       },
@@ -222,7 +222,7 @@
       "id": "pair-vitd-normal",
       "category": "bloodwork_flip",
       "pair_id": "vitd-bloodwork",
-      "input": { "stack": [], "goals": ["improve bone health"], "candidates": ["vitamin D3"], "budget_usd_month": 20, "bloodwork": { "vitamin_d_25oh": "normal" } },
+      "input": { "stack": [], "goals": ["maintain bone density"], "candidates": ["vitamin D3"], "budget_usd_month": 20, "bloodwork": { "vitamin_d_25oh": "normal" } },
       "expect": {
         "vitamin D3": { "status": "candidate", "acceptable_verdicts": ["Don't"], "acceptable_confidence": ["Moderate", "Strong"], "reason_must_mention": ["bone", "normal", "sufficient"] }
       },
