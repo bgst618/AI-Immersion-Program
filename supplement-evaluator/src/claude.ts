@@ -1,10 +1,18 @@
-import { checkContentGuard, validateStructure } from "./assemble";
+import { checkContentGuard, validateStructure, validateSuggestions } from "./assemble";
+import { INGREDIENTS } from "./catalog";
 import type { CompiledItem, Intake } from "./schema";
-import { ClaudeToolOutputSchema, type ClaudeToolOutput, markerLabel, markerUnit } from "./schema";
+import {
+  ClaudeToolOutputSchema,
+  MAX_SUGGESTIONS,
+  type ClaudeToolOutput,
+  markerLabel,
+  markerUnit,
+  monthlyBudget,
+} from "./schema";
 
 // NVIDIA's build.nvidia.com endpoint is OpenAI-compatible (Chat Completions API).
 const NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
-const MAX_TOKENS = 4000;
+const MAX_TOKENS = 6000;
 const TEMPERATURE = 0;
 const TOOL_NAME = "submit_evaluation";
 
@@ -41,7 +49,8 @@ const TOOL_DEFINITION = {
           items: {
             type: "object",
             properties: {
-              name: { type: "string", description: "Exact item name as given in the input list." },
+              id: { type: "string", description: "The item's id exactly as given in the input list, e.g. \"item_1\"." },
+              name: { type: "string", description: "Optional, informational only. The id is what identifies the item." },
               status: { type: "string", enum: ["current", "candidate"] },
               isMainstreamHumanTested: {
                 type: "boolean",
@@ -70,7 +79,7 @@ const TOOL_DEFINITION = {
               mechanism: { type: "string", description: "1-3 plain-language sentences on what it does and how." },
             },
             required: [
-              "name",
+              "id",
               "status",
               "isMainstreamHumanTested",
               "evidenceType",
@@ -83,8 +92,33 @@ const TOOL_DEFINITION = {
             ],
           },
         },
+        suggestions: {
+          type: "array",
+          maxItems: MAX_SUGGESTIONS,
+          description: `0-${MAX_SUGGESTIONS} additions (rule 13). Empty array if nothing qualifies.`,
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string", description: "Exactly one name from the allowed suggestion list." },
+              goalsAddressed: {
+                type: "array",
+                items: { type: "string" },
+                description: "Which of the user's stated goals this supports (at least one).",
+              },
+              confidence: { type: "string", enum: ["Strong", "Moderate"] },
+              evidenceType: { type: "string" },
+              estimatedMonthlyCost: {
+                type: "number",
+                description: "Typical ingredient-level monthly cost in the user's budget currency.",
+              },
+              reason: { type: "string", description: "Same rules as item reasons: capitalized, names the user's goal." },
+              mechanism: { type: "string", description: "1-3 plain-language sentences on what it does and how." },
+            },
+            required: ["name", "goalsAddressed", "confidence", "evidenceType", "estimatedMonthlyCost", "reason", "mechanism"],
+          },
+        },
       },
-      required: ["items"],
+      required: ["items", "suggestions"],
     },
   },
 } as const;
@@ -118,24 +152,29 @@ Rules:
 7. Keep "mechanism" to 1-3 plain-language sentences.
 8. status determines which verdicts are valid: "current" items must use Keep or Remove; "candidate" items must use Take or Don't. Never mix these up.
 9. goalsAddressed must only contain goals from the user's exact goal list (or be empty).
-10. Return exactly one item per input item, same names, same order. Do not add or omit items.
-11. "reason" must start with a capital letter and explicitly name the goal it's judged against, e.g. "For your goal to build muscle, ..." or "Building muscle: ...". Never leave the reader to infer which goal a reason is about.
+10. Return exactly one entry per input item, in the same order, with its "id" copied exactly (e.g. "item_1"). Do not add or omit items. The id identifies the item; you may use a more precise name in your text.
+11. "reason" must start with a capital letter and name the goal it's judged against using the goal's exact wording, e.g. "For your goal to build muscle, ...". Never leave the reader to infer which goal a reason is about.
+12. If an item isn't supported for the user's goals but IS well supported (Strong or Moderate evidence) for a common goal the user did not list, say so in "reason" after addressing their goal, e.g. "No evidence it helps with your goal to improve sleep quality. Well supported for strength and muscle — if that's a goal, add it." This is information only: it must not change the verdict, and the unlisted goal must not go in goalsAddressed.
+13. Suggestions: after evaluating the items, suggest up to ${MAX_SUGGESTIONS} additions the user is NOT already taking or considering (in any form or name). Each must come from the allowed suggestion list in the user message, have Strong or Moderate evidence for at least one of the user's stated goals, and fit the budget left over after the Keep/Take items (the combined estimatedMonthlyCost of all suggestions must stay within it). Prefer the strongest evidence first. If nothing qualifies, return an empty suggestions array — never pad with weaker options. Rules 3, 6, 7, and 11 apply to suggestions too.
 
 Call the ${TOOL_NAME} tool with your evaluation. Do not respond with plain text.`;
 }
 
 function buildUserMessage(intake: Intake, items: CompiledItem[]): string {
-  const itemLines = items.map((item) => `- ${item.name} (${item.status})`).join("\n");
+  const itemLines = items.map((item) => `- [${item.id}] ${item.name} (${item.status})`).join("\n");
   return `Items to evaluate:
 ${itemLines}
 
 User's goals:
 ${intake.goals.map((g) => `- ${g}`).join("\n")}
 
-Budget: ${formatBudget(intake)}
+Budget: ${formatBudget(intake)} (about ${monthlyBudget(intake.budget).toFixed(2)} ${intake.budget.currency} per month)
 
 Blood work:
-${formatBloodWork(intake)}`;
+${formatBloodWork(intake)}
+
+Allowed suggestion list (use these exact names):
+${INGREDIENTS.map((i) => i.name).join(", ")}`;
 }
 
 interface OpenAIToolCall {
@@ -219,16 +258,20 @@ async function requestToolCall(apiKey: string, model: string, messages: OpenAIMe
 
 function validate(
   items: CompiledItem[],
-  goals: string[],
+  intake: Intake,
   input: unknown,
 ): { ok: true; data: ClaudeToolOutput } | { ok: false; message: string } {
   const parsed = ClaudeToolOutputSchema.safeParse(input);
   if (!parsed.success) {
     return { ok: false, message: parsed.error.message };
   }
-  const structure = validateStructure(items, goals, parsed.data);
+  const structure = validateStructure(items, intake.goals, parsed.data);
   if (!structure.ok) {
     return { ok: false, message: structure.message! };
+  }
+  const suggestions = validateSuggestions(items, intake.goals, intake.budget, parsed.data);
+  if (!suggestions.ok) {
+    return { ok: false, message: suggestions.message! };
   }
   const contentGuard = checkContentGuard(parsed.data);
   if (!contentGuard.ok) {
@@ -251,7 +294,7 @@ export async function evaluateWithClaude(
   ];
 
   const firstCall = await requestToolCall(apiKey, model, messages);
-  const firstResult = validate(items, intake.goals, firstCall.input);
+  const firstResult = validate(items, intake, firstCall.input);
   if (firstResult.ok) return firstResult.data;
 
   // Retry once with the validation error appended, per spec.
@@ -270,7 +313,7 @@ export async function evaluateWithClaude(
   ];
 
   const secondCall = await requestToolCall(apiKey, model, retryMessages);
-  const secondResult = validate(items, intake.goals, secondCall.input);
+  const secondResult = validate(items, intake, secondCall.input);
   if (secondResult.ok) return secondResult.data;
 
   throw new ClaudeValidationError(secondResult.message);

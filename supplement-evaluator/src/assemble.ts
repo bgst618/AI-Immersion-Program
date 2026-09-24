@@ -1,5 +1,6 @@
-import type { ClaudeItemOutput, ClaudeToolOutput, CompiledItem, ItemReport } from "./schema";
-import { DISCLAIMER, EvaluationResponseSchema, type EvaluationResponse } from "./schema";
+import type { Budget, ClaudeItemOutput, ClaudeToolOutput, CompiledItem, ItemReport, SuggestionReport } from "./schema";
+import { BRAND_PATTERN, findIngredient, normalizeTerm } from "./catalog";
+import { DISCLAIMER, EvaluationResponseSchema, monthlyBudget, type EvaluationResponse } from "./schema";
 
 export interface StructureCheckResult {
   ok: boolean;
@@ -25,24 +26,26 @@ export function validateStructure(
     };
   }
 
-  const byKey = new Map(compiledItems.map((item) => [item.name.toLowerCase(), item] as const));
+  // Matched by id, never by name: the model may legitimately rename an item
+  // ("creatine" -> "creatine monohydrate"), which used to fail every time.
+  const byId = new Map(compiledItems.map((item) => [item.id, item] as const));
   const seen = new Set<string>();
 
   for (const out of output.items) {
-    const key = out.name.toLowerCase();
-    const expected = byKey.get(key);
+    const expected = byId.get(out.id);
     if (!expected) {
-      return { ok: false, message: `Item "${out.name}" was not in the input list.` };
+      return { ok: false, message: `Item id "${out.id}" was not in the input list.` };
     }
-    if (seen.has(key)) {
-      return { ok: false, message: `Item "${out.name}" was returned more than once.` };
+    if (seen.has(out.id)) {
+      return { ok: false, message: `Item id "${out.id}" was returned more than once.` };
     }
-    seen.add(key);
+    seen.add(out.id);
+    const label = `Item ${out.id} ("${expected.name}")`;
 
     if (out.status !== expected.status) {
       return {
         ok: false,
-        message: `Item "${out.name}" has status "${out.status}" but was submitted as "${expected.status}".`,
+        message: `${label} has status "${out.status}" but was submitted as "${expected.status}".`,
       };
     }
 
@@ -50,31 +53,12 @@ export function validateStructure(
     if (!allowedVerdicts.includes(out.verdict)) {
       return {
         ok: false,
-        message: `Item "${out.name}" (${expected.status}) has verdict "${out.verdict}"; must be one of ${allowedVerdicts.join(" or ")}.`,
+        message: `${label} (${expected.status}) has verdict "${out.verdict}"; must be one of ${allowedVerdicts.join(" or ")}.`,
       };
     }
 
-    const goalSet = new Set(goals);
-    for (const g of out.goalsAddressed) {
-      if (!goalSet.has(g)) {
-        return {
-          ok: false,
-          message: `Item "${out.name}" lists goalsAddressed "${g}" which is not one of the user's stated goals.`,
-        };
-      }
-    }
-
-    // Rule 11: the reason must explicitly name the goal it's judged against,
-    // not leave the reader to infer it. Fall back to the full goal list for
-    // Insufficient-evidence items, whose goalsAddressed is typically empty.
-    const goalsToName = out.goalsAddressed.length > 0 ? out.goalsAddressed : goals;
-    const reasonLower = out.reason.toLowerCase();
-    if (!goalsToName.some((g) => reasonLower.includes(g.toLowerCase()))) {
-      return {
-        ok: false,
-        message: `Item "${out.name}"'s reason does not explicitly name the goal it's judged against (expected one of: ${goalsToName.join(", ")}).`,
-      };
-    }
+    const goalCheck = checkGoalTieIn(label, out.goalsAddressed, out.reason, goals);
+    if (!goalCheck.ok) return goalCheck;
   }
 
   if (seen.size !== compiledItems.length) {
@@ -84,26 +68,126 @@ export function validateStructure(
   return { ok: true };
 }
 
+const STOPWORDS = new Set(["a", "an", "and", "for", "in", "my", "of", "on", "or", "the", "to", "with", "your"]);
+
+function words(text: string): string[] {
+  return text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+}
+
+function stem(word: string): string {
+  return word.replace(/(ing|ed|es|s|e)$/, "") || word;
+}
+
+// A reason "names" a goal when every content word of the goal appears in it,
+// allowing inflection: "building muscle" names "build muscle", "improves
+// sleep quality" names "improve sleep quality".
+export function reasonNamesGoal(reason: string, goal: string): boolean {
+  const goalStems = words(goal)
+    .filter((w) => !STOPWORDS.has(w))
+    .map(stem);
+  if (goalStems.length === 0) return reason.toLowerCase().includes(goal.toLowerCase());
+  const reasonWords = words(reason);
+  return goalStems.every((s) => reasonWords.some((w) => w.startsWith(s)));
+}
+
+function checkGoalTieIn(
+  label: string,
+  goalsAddressed: string[],
+  reason: string,
+  goals: string[],
+): StructureCheckResult {
+  const goalSet = new Set(goals);
+  for (const g of goalsAddressed) {
+    if (!goalSet.has(g)) {
+      return {
+        ok: false,
+        message: `${label} lists goalsAddressed "${g}" which is not one of the user's stated goals.`,
+      };
+    }
+  }
+  // The reason must name the goal it's judged against. Fall back to the full
+  // goal list for Insufficient-evidence items, whose goalsAddressed is often empty.
+  const goalsToName = goalsAddressed.length > 0 ? goalsAddressed : goals;
+  if (!goalsToName.some((g) => reasonNamesGoal(reason, g))) {
+    return {
+      ok: false,
+      message: `${label}'s reason does not name the goal it's judged against (use the exact wording of one of: ${goalsToName.join(", ")}).`,
+    };
+  }
+  return { ok: true };
+}
+
+// Suggestions must be catalog ingredients (mainstream, never a brand) that the
+// user isn't already taking or considering, tied to a stated goal, and
+// affordable in total. Confidence (Strong/Moderate) and count (<= 3) are
+// enforced by the zod schema. Failures trigger the retry like validateStructure.
+export function validateSuggestions(
+  compiledItems: CompiledItem[],
+  goals: string[],
+  budget: Budget,
+  output: ClaudeToolOutput,
+): StructureCheckResult {
+  const alreadyListed = new Set<string>();
+  for (const item of compiledItems) {
+    alreadyListed.add(normalizeTerm(item.name));
+    const known = findIngredient(item.name);
+    if (known) alreadyListed.add(normalizeTerm(known.name));
+  }
+
+  const seen = new Set<string>();
+  let totalCost = 0;
+  for (const suggestion of output.suggestions) {
+    const label = `Suggestion "${suggestion.name}"`;
+    const ingredient = findIngredient(suggestion.name);
+    if (!ingredient) {
+      return { ok: false, message: `${label} is not in the allowed ingredient list.` };
+    }
+    const key = normalizeTerm(ingredient.name);
+    if (alreadyListed.has(key)) {
+      return { ok: false, message: `${label} is already in the user's stack or candidates.` };
+    }
+    if (seen.has(key)) {
+      return { ok: false, message: `${label} is suggested more than once.` };
+    }
+    seen.add(key);
+
+    const goalCheck = checkGoalTieIn(label, suggestion.goalsAddressed, suggestion.reason, goals);
+    if (!goalCheck.ok) return goalCheck;
+    totalCost += suggestion.estimatedMonthlyCost;
+  }
+
+  const limit = monthlyBudget(budget);
+  if (totalCost > limit) {
+    return {
+      ok: false,
+      message: `Suggestions cost about ${totalCost.toFixed(2)} ${budget.currency}/month in total, over the user's ${limit.toFixed(2)} ${budget.currency}/month budget.`,
+    };
+  }
+  return { ok: true };
+}
+
 const DIET_PATTERN = /\bdiet(ary|s)?\b/i;
-// Best-effort list of common supplement/vitamin brand names. Not exhaustive
-// (see PLAN.md step 6), but any hit here is a hard failure, not a log line.
-const BRAND_PATTERN =
-  /\b(optimum nutrition|gnc|now foods|nature made|thorne|life extension|garden of life|nordic naturals|kirkland|centrum|nutricost|bulk supplements|transparent labs)\b/i;
+// Brand names come from public/catalog.json (shared with the UI's brand warning).
+// Not exhaustive, but any hit is a hard failure, not a log line.
 
 // Rule 6: no diet/brand mentions in reason, mechanism, or evidenceType. This
 // is a structural check like validateStructure — a hit triggers the one
 // allowed retry in claude.ts instead of silently shipping the violation
 // (e.g. a live "...in individuals with adequate diet." reason).
 export function checkContentGuard(output: ClaudeToolOutput): StructureCheckResult {
-  for (const item of output.items) {
-    const text = `${item.reason} ${item.mechanism} ${item.evidenceType}`;
+  const entries = [
+    ...output.items.map((item) => ({ label: `Item ${item.id}`, fields: item })),
+    ...output.suggestions.map((s) => ({ label: `Suggestion "${s.name}"`, fields: s })),
+  ];
+  for (const { label, fields } of entries) {
+    const text = `${fields.reason} ${fields.mechanism} ${fields.evidenceType}`;
     if (DIET_PATTERN.test(text)) {
-      return { ok: false, message: `Item "${item.name}" mentions "diet" in reason, mechanism, or evidenceType — not allowed.` };
+      return { ok: false, message: `${label} mentions "diet" in reason, mechanism, or evidenceType — not allowed.` };
     }
     if (BRAND_PATTERN.test(text)) {
       return {
         ok: false,
-        message: `Item "${item.name}" mentions a brand/product name in reason, mechanism, or evidenceType — not allowed.`,
+        message: `${label} mentions a brand/product name in reason, mechanism, or evidenceType — not allowed.`,
       };
     }
   }
@@ -142,10 +226,10 @@ function applyOverrides(item: ClaudeItemOutput): ClaudeItemOutput {
 }
 
 export function assembleReports(compiledItems: CompiledItem[], output: ClaudeToolOutput): EvaluationResponse {
-  const byKey = new Map(output.items.map((item) => [item.name.toLowerCase(), item] as const));
+  const byId = new Map(output.items.map((item) => [item.id, item] as const));
 
   const items: ItemReport[] = compiledItems.map((compiled) => {
-    const raw = byKey.get(compiled.name.toLowerCase())!;
+    const raw = byId.get(compiled.id)!;
     const corrected = applyOverrides(raw);
     return {
       name: compiled.name,
@@ -160,6 +244,18 @@ export function assembleReports(compiledItems: CompiledItem[], output: ClaudeToo
     };
   });
 
-  const evaluation: EvaluationResponse = { items, disclaimer: DISCLAIMER };
+  const suggestions: SuggestionReport[] = output.suggestions.map((s) => ({
+    name: findIngredient(s.name)?.name ?? s.name,
+    status: "suggested",
+    verdict: "Take",
+    confidence: s.confidence,
+    goalsAddressed: s.goalsAddressed,
+    evidenceType: s.evidenceType,
+    estimatedMonthlyCost: s.estimatedMonthlyCost,
+    reason: capitalizeFirstLetter(s.reason),
+    mechanism: s.mechanism,
+  }));
+
+  const evaluation: EvaluationResponse = { items, suggestions, disclaimer: DISCLAIMER };
   return EvaluationResponseSchema.parse(evaluation);
 }

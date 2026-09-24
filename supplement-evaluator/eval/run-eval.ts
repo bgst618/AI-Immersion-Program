@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assembleReports } from "../src/assemble";
+import { normalizeTerm } from "../src/catalog";
 import { evaluateWithClaude, resolveModel } from "../src/claude";
 import { compileItems } from "../src/items";
 import {
@@ -24,6 +25,7 @@ import {
   type BloodWorkEntry,
   type Intake,
   type ItemReport,
+  type SuggestionReport,
 } from "../src/schema";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -70,6 +72,16 @@ interface RawItemExpectation {
   budget_flag?: boolean;
 }
 
+// Suggestions are scored per run. `allowed` is the relevance check: every
+// suggestion must be one of these (catalog standard names).
+interface RawSuggestionExpectation {
+  min_count?: number;
+  max_count?: number;
+  acceptable_confidence?: string[];
+  allowed?: string[];
+  must_not_include?: string[];
+}
+
 interface RawCase {
   id: string;
   category: string;
@@ -83,6 +95,7 @@ interface RawCase {
     bloodwork: Record<string, string> | null;
   };
   expect: Record<string, RawItemExpectation | string>; // "_structural" maps to a string
+  expect_suggestions?: RawSuggestionExpectation;
   evidence_note?: string;
 }
 
@@ -193,7 +206,7 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T,
 
 // --- Running cases ---------------------------------------------------------
 
-type RunResult = { ok: true; items: ItemReport[] } | { ok: false; error: string };
+type RunResult = { ok: true; items: ItemReport[]; suggestions: SuggestionReport[] } | { ok: false; error: string };
 
 interface CaseRunData {
   case: RawCase;
@@ -213,7 +226,7 @@ async function runOne(task: Task, apiKey: string, model: string): Promise<RunRes
     await waitForRateLimitSlot();
     const output = await evaluateWithClaude(apiKey, model, task.intake, task.items);
     const evaluation = assembleReports(task.items, output);
-    return { ok: true, items: evaluation.items };
+    return { ok: true, items: evaluation.items, suggestions: evaluation.suggestions };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
@@ -354,6 +367,61 @@ function scoreItem(
   };
 }
 
+const SUGGESTIONS_ROW = "(suggestions)";
+
+function scoreSuggestions(caseData: CaseRunData, expectation: RawSuggestionExpectation, globalBanned: string[]): ItemScoreRow {
+  const failReasons: string[] = [];
+  const names: (string | null)[] = [];
+  const confidences: (string | null)[] = [];
+  const allowed = expectation.allowed && new Set(expectation.allowed.map(normalizeTerm));
+  const forbidden = new Set((expectation.must_not_include ?? []).map(normalizeTerm));
+  const goals = new Set(caseData.case.input.goals);
+
+  for (const run of caseData.runs) {
+    if (!run.ok) {
+      names.push(null);
+      confidences.push(null);
+      failReasons.push(`run_error: ${run.error}`);
+      continue;
+    }
+    const suggestions = run.suggestions;
+    names.push(suggestions.map((s) => s.name).join("+") || "none");
+    confidences.push(suggestions.map((s) => s.confidence).join("+") || "-");
+
+    if (expectation.min_count !== undefined && suggestions.length < expectation.min_count) {
+      failReasons.push(`too_few:${suggestions.length}<${expectation.min_count}`);
+    }
+    if (expectation.max_count !== undefined && suggestions.length > expectation.max_count) {
+      failReasons.push(`too_many:${suggestions.length}>${expectation.max_count}`);
+    }
+    for (const s of suggestions) {
+      const key = normalizeTerm(s.name);
+      if (expectation.acceptable_confidence && !expectation.acceptable_confidence.includes(s.confidence)) {
+        failReasons.push(`confidence:${s.name}=${s.confidence}`);
+      }
+      if (allowed && !allowed.has(key)) failReasons.push(`irrelevant:${s.name}`);
+      if (forbidden.has(key)) failReasons.push(`already_taken:${s.name}`);
+      if (s.goalsAddressed.length === 0 || s.goalsAddressed.some((g) => !goals.has(g))) {
+        failReasons.push(`goals:${s.name}`);
+      }
+      for (const phrase of globalBanned) {
+        if (s.reason.toLowerCase().includes(phrase.toLowerCase())) failReasons.push(`banned_phrase:${s.name}:"${phrase}"`);
+      }
+    }
+  }
+
+  return {
+    caseId: caseData.case.id,
+    category: caseData.case.category,
+    ambiguous: false,
+    itemName: SUGGESTIONS_ROW,
+    verdicts: names,
+    confidences,
+    pass: failReasons.length === 0,
+    failReasons: [...new Set(failReasons)],
+  };
+}
+
 function dominantVerdict(verdicts: (string | null)[]): string | null {
   const counts = new Map<string, number>();
   for (const v of verdicts) {
@@ -438,7 +506,7 @@ async function main() {
   for (const caseData of allCaseData) {
     for (const [key, expectation] of Object.entries(caseData.case.expect)) {
       if (key === "_structural") {
-        const firstOk = caseData.runs.find((r): r is { ok: true; items: ItemReport[] } => r.ok);
+        const firstOk = caseData.runs.find((r): r is Extract<RunResult, { ok: true }> => r.ok);
         const actual = firstOk ? firstOk.items.map((i) => `${i.name} (${i.status})`).join("; ") : "no successful run";
         structuralNotes.push({ caseId: caseData.case.id, note: expectation as string, actual });
         continue;
@@ -446,6 +514,9 @@ async function main() {
       itemRows.push(
         scoreItem(caseData, key, expectation as RawItemExpectation, evalFile.scoring.global_reason_must_not_mention, runsPerCase),
       );
+    }
+    if (caseData.case.expect_suggestions) {
+      itemRows.push(scoreSuggestions(caseData, caseData.case.expect_suggestions, evalFile.scoring.global_reason_must_not_mention));
     }
   }
 

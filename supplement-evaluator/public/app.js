@@ -14,11 +14,59 @@ function isVagueGoal(goal) {
   return VAGUE_PATTERNS.some((p) => p.test(goal));
 }
 
-function createTagInput(fieldName, { validate } = {}) {
+// Curated ingredients (+aliases), goals, and brand names. Same file the Worker
+// imports (src/catalog.ts). Until it loads, inputs work as plain free text.
+let catalog = { ingredients: [], goals: [], brands: [] };
+fetch("/catalog.json")
+  .then((r) => (r.ok ? r.json() : catalog))
+  .then((data) => {
+    catalog = data;
+  })
+  .catch(() => {});
+
+// Keep in sync with normalizeTerm in src/catalog.ts.
+function normalizeTerm(text) {
+  return text.toLowerCase().replace(/[.\-_]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function looksLikeBrand(text) {
+  if (/[®™]/.test(text)) return true;
+  const normalized = ` ${normalizeTerm(text)} `;
+  return catalog.brands.some((brand) => normalized.includes(` ${normalizeTerm(brand)} `));
+}
+
+function ingredientOptions() {
+  return catalog.ingredients.map((i) => ({ value: i.name, terms: [i.name, ...i.aliases] }));
+}
+
+function goalOptions() {
+  return catalog.goals.map((g) => ({ value: g, terms: [g] }));
+}
+
+const MAX_SUGGESTIONS = 8;
+
+// Tag input with an accessible combobox dropdown. Free text is always allowed:
+// Enter adds the highlighted option if one is highlighted, otherwise the typed
+// text — canonicalized when it exactly matches a known name or alias.
+function createTagInput(fieldName, { getOptions, validate } = {}) {
   const container = document.querySelector(`.tag-input[data-field="${fieldName}"]`);
   const tagsEl = container.querySelector(".tags");
   const input = container.querySelector("input[type='text']");
   const tags = [];
+
+  const listbox = document.createElement("ul");
+  listbox.className = "suggestions";
+  listbox.id = `${fieldName}-listbox`;
+  listbox.setAttribute("role", "listbox");
+  listbox.hidden = true;
+  container.appendChild(listbox);
+  input.setAttribute("role", "combobox");
+  input.setAttribute("aria-autocomplete", "list");
+  input.setAttribute("aria-controls", listbox.id);
+  input.setAttribute("aria-expanded", "false");
+
+  let matches = [];
+  let active = -1;
 
   function render() {
     tagsEl.innerHTML = "";
@@ -39,23 +87,119 @@ function createTagInput(fieldName, { validate } = {}) {
     });
   }
 
+  function closeList() {
+    matches = [];
+    active = -1;
+    listbox.hidden = true;
+    listbox.innerHTML = "";
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
+  }
+
+  function renderList() {
+    listbox.innerHTML = "";
+    if (matches.length === 0) {
+      closeList();
+      return;
+    }
+    matches.forEach((match, i) => {
+      const li = document.createElement("li");
+      li.id = `${fieldName}-option-${i}`;
+      li.setAttribute("role", "option");
+      li.setAttribute("aria-selected", String(i === active));
+      if (i === active) li.className = "active";
+      li.textContent = match.value;
+      if (match.matchedAlias) {
+        const hint = document.createElement("span");
+        hint.className = "alias-hint";
+        hint.textContent = ` — matches "${match.matchedAlias}"`;
+        li.appendChild(hint);
+      }
+      // mousedown (not click) so the input's blur doesn't add the raw text first.
+      li.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        addTag(match.value);
+      });
+      listbox.appendChild(li);
+    });
+    listbox.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+    if (active >= 0) input.setAttribute("aria-activedescendant", `${fieldName}-option-${active}`);
+    else input.removeAttribute("aria-activedescendant");
+  }
+
+  function updateMatches() {
+    const query = normalizeTerm(input.value);
+    if (!getOptions || !query) {
+      closeList();
+      return;
+    }
+    const taken = new Set(tags.map(normalizeTerm));
+    const scored = [];
+    for (const option of getOptions()) {
+      if (taken.has(normalizeTerm(option.value))) continue;
+      let best = null;
+      for (const term of option.terms) {
+        const t = normalizeTerm(term);
+        const index = t.indexOf(query);
+        if (index === -1) continue;
+        // Rank: whole term starts with query > a word starts with it > mid-word.
+        const score = index === 0 ? 0 : t[index - 1] === " " ? 1 : 2;
+        if (!best || score < best.score) best = { score, term };
+      }
+      if (best) {
+        const matchedAlias = normalizeTerm(best.term) === normalizeTerm(option.value) ? null : best.term;
+        scored.push({ value: option.value, matchedAlias, score: best.score });
+      }
+    }
+    scored.sort((a, b) => a.score - b.score || a.value.localeCompare(b.value));
+    matches = scored.slice(0, MAX_SUGGESTIONS);
+    active = -1;
+    renderList();
+  }
+
+  function canonicalize(raw) {
+    if (!getOptions) return raw;
+    const key = normalizeTerm(raw);
+    const option = getOptions().find((o) => o.terms.some((t) => normalizeTerm(t) === key));
+    return option ? option.value : raw;
+  }
+
   function addTag(raw) {
-    const value = raw.trim();
+    const value = canonicalize(raw.trim());
     if (!value) return;
     if (tags.some((t) => t.toLowerCase() === value.toLowerCase())) {
       input.value = "";
+      closeList();
       return;
     }
-    if (validate) validate(value);
+    // validate returns false to reject; the text stays in the box to edit.
+    if (validate && validate(value) === false) {
+      closeList();
+      return;
+    }
     tags.push(value);
     input.value = "";
+    closeList();
     render();
   }
 
+  input.addEventListener("input", updateMatches);
+
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === ",") {
+    if (e.key === "ArrowDown" && matches.length > 0) {
       e.preventDefault();
-      addTag(input.value);
+      active = (active + 1) % matches.length;
+      renderList();
+    } else if (e.key === "ArrowUp" && matches.length > 0) {
+      e.preventDefault();
+      active = active <= 0 ? matches.length - 1 : active - 1;
+      renderList();
+    } else if (e.key === "Escape") {
+      closeList();
+    } else if (e.key === "Enter" || e.key === ",") {
+      e.preventDefault();
+      addTag(active >= 0 ? matches[active].value : input.value);
     } else if (e.key === "Backspace" && input.value === "" && tags.length > 0) {
       tags.pop();
       render();
@@ -63,6 +207,7 @@ function createTagInput(fieldName, { validate } = {}) {
   });
 
   input.addEventListener("blur", () => {
+    closeList();
     if (input.value.trim()) addTag(input.value);
   });
 
@@ -73,9 +218,28 @@ function createTagInput(fieldName, { validate } = {}) {
 
 const goalsError = document.getElementById("goals-error");
 
-const stackField = createTagInput("stack");
-const candidatesField = createTagInput("candidates");
+function ingredientValidator(errorEl) {
+  return (value) => {
+    if (looksLikeBrand(value)) {
+      errorEl.hidden = false;
+      errorEl.textContent = "Enter the ingredient instead (e.g. whey protein).";
+      return false;
+    }
+    errorEl.hidden = true;
+    return true;
+  };
+}
+
+const stackField = createTagInput("stack", {
+  getOptions: ingredientOptions,
+  validate: ingredientValidator(document.getElementById("stack-error")),
+});
+const candidatesField = createTagInput("candidates", {
+  getOptions: ingredientOptions,
+  validate: ingredientValidator(document.getElementById("candidates-error")),
+});
 const goalsField = createTagInput("goals", {
+  getOptions: goalOptions,
   validate: (goal) => {
     if (isVagueGoal(goal)) {
       goalsError.hidden = false;
@@ -174,61 +338,101 @@ const CONFIDENCE_EXPLANATION = {
 
 const POSITIVE_VERDICTS = new Set(["Keep", "Take"]);
 
+// The API keeps "Remove" as the verdict value; users see the softer label,
+// since most removals mean "no support for your goals", not "harmful".
+const VERDICT_LABEL = { Remove: "Not needed for your goals" };
+
+// Plain web search for the ingredient name only — never a product or store.
+function ingredientSearchUrl(name) {
+  return `https://www.google.com/search?q=${encodeURIComponent(name)}`;
+}
+
+function buildBuyingNote(name) {
+  const note = document.createElement("p");
+  note.className = "buying-note";
+  note.append("Look for a USP Verified or NSF Certified product. ");
+  const link = document.createElement("a");
+  link.href = ingredientSearchUrl(name);
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = `Search the web for ${name}`;
+  note.appendChild(link);
+  return note;
+}
+
+function buildCard(item) {
+  const card = document.createElement("article");
+  card.className = item.status === "suggested" ? "card suggested" : "card";
+
+  const header = document.createElement("div");
+  header.className = "card-header";
+
+  const title = document.createElement("h3");
+  title.textContent = item.name;
+
+  const chip = document.createElement("span");
+  chip.className = "chip";
+  chip.textContent = item.status;
+
+  header.append(title, chip);
+
+  const verdict = document.createElement("p");
+  verdict.className = `verdict ${POSITIVE_VERDICTS.has(item.verdict) ? "positive" : "negative"}`;
+  verdict.textContent = VERDICT_LABEL[item.verdict] || item.verdict;
+
+  const badge = document.createElement("span");
+  const confidenceClass = CONFIDENCE_CLASS[item.confidence] || "Insufficient";
+  badge.className = `badge ${confidenceClass}`;
+  badge.textContent = item.confidence;
+
+  const badgeRow = [badge];
+  if (item.budgetFlag) {
+    const budgetBadge = document.createElement("span");
+    budgetBadge.className = "badge budget-flag";
+    budgetBadge.textContent = "Budget-limited";
+    badgeRow.push(budgetBadge);
+  }
+
+  const confidenceExplainer = document.createElement("p");
+  confidenceExplainer.className = "confidence-explainer";
+  confidenceExplainer.textContent =
+    CONFIDENCE_EXPLANATION[item.confidence] || CONFIDENCE_EXPLANATION["Insufficient evidence to rate"];
+
+  const reasonLabel = document.createElement("p");
+  reasonLabel.className = "label";
+  reasonLabel.textContent = "Why";
+  const reason = document.createElement("p");
+  reason.textContent = item.reason;
+
+  const mechanismLabel = document.createElement("p");
+  mechanismLabel.className = "label";
+  mechanismLabel.textContent = "How it works";
+  const mechanism = document.createElement("p");
+  mechanism.textContent = item.mechanism;
+
+  card.append(header, verdict, ...badgeRow, confidenceExplainer, reasonLabel, reason, mechanismLabel, mechanism);
+  if (item.verdict === "Take") card.appendChild(buildBuyingNote(item.name));
+  return card;
+}
+
 function renderResults(evaluation) {
   resultsCards.innerHTML = "";
+  for (const item of evaluation.items) resultsCards.appendChild(buildCard(item));
 
-  for (const item of evaluation.items) {
-    const card = document.createElement("article");
-    card.className = "card";
+  const suggestedHeading = document.createElement("h2");
+  suggestedHeading.className = "suggested-heading";
+  suggestedHeading.textContent = "Suggested additions";
+  resultsCards.appendChild(suggestedHeading);
 
-    const header = document.createElement("div");
-    header.className = "card-header";
-
-    const title = document.createElement("h3");
-    title.textContent = item.name;
-
-    const chip = document.createElement("span");
-    chip.className = "chip";
-    chip.textContent = item.status;
-
-    header.append(title, chip);
-
-    const verdict = document.createElement("p");
-    verdict.className = `verdict ${POSITIVE_VERDICTS.has(item.verdict) ? "positive" : "negative"}`;
-    verdict.textContent = item.verdict;
-
-    const badge = document.createElement("span");
-    const confidenceClass = CONFIDENCE_CLASS[item.confidence] || "Insufficient";
-    badge.className = `badge ${confidenceClass}`;
-    badge.textContent = item.confidence;
-
-    const badgeRow = [badge];
-    if (item.budgetFlag) {
-      const budgetBadge = document.createElement("span");
-      budgetBadge.className = "badge budget-flag";
-      budgetBadge.textContent = "Budget-limited";
-      badgeRow.push(budgetBadge);
-    }
-
-    const confidenceExplainer = document.createElement("p");
-    confidenceExplainer.className = "confidence-explainer";
-    confidenceExplainer.textContent =
-      CONFIDENCE_EXPLANATION[item.confidence] || CONFIDENCE_EXPLANATION["Insufficient evidence to rate"];
-
-    const reasonLabel = document.createElement("p");
-    reasonLabel.className = "label";
-    reasonLabel.textContent = "Why";
-    const reason = document.createElement("p");
-    reason.textContent = item.reason;
-
-    const mechanismLabel = document.createElement("p");
-    mechanismLabel.className = "label";
-    mechanismLabel.textContent = "How it works";
-    const mechanism = document.createElement("p");
-    mechanism.textContent = item.mechanism;
-
-    card.append(header, verdict, ...badgeRow, confidenceExplainer, reasonLabel, reason, mechanismLabel, mechanism);
-    resultsCards.appendChild(card);
+  const suggestions = evaluation.suggestions || [];
+  if (suggestions.length === 0) {
+    const none = document.createElement("p");
+    none.className = "no-suggestions";
+    none.textContent =
+      "No additional ingredients met the bar: Strong or Moderate evidence for your goals, within your budget.";
+    resultsCards.appendChild(none);
+  } else {
+    for (const suggestion of suggestions) resultsCards.appendChild(buildCard(suggestion));
   }
 
   resultsEl.hidden = false;

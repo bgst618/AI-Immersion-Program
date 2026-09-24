@@ -11,7 +11,7 @@
     <h1>Supplement Stack Evaluator</h1>
     <p class="subtitle">
       Tell us your current stack, your specific goals, and your budget. We'll give you a
-      keep/remove/take decision for each item — grounded in human research, not a wellness score.
+      keep / not needed / take decision for each item — grounded in human research, not a wellness score.
     </p>
   </header>
 
@@ -19,18 +19,19 @@
     <form id="evaluate-form" novalidate>
       <section class="field-group">
         <label for="stack-input">Current stack</label>
-        <p class="hint">What you're already taking. Press Enter or comma to add.</p>
+        <p class="hint">What you're already taking. Start typing to search, or enter any ingredient name. Press Enter or comma to add.</p>
         <div class="tag-input" data-field="stack">
           <div class="tags" id="stack-tags"></div>
-          <input type="text" id="stack-input" placeholder="e.g. multivitamin" autocomplete="off" />
+          <input type="text" id="stack-input" placeholder="e.g. vitamin D3" autocomplete="off" />
         </div>
+        <p class="field-error" id="stack-error" role="alert" hidden></p>
       </section>
 
       <section class="field-group">
         <label for="goals-input">Your goals <span class="required">*</span></label>
         <p class="hint">
-          Specific and testable — e.g. "build muscle", "improve sleep quality". Vague goals like
-          "be healthier" will be rejected.
+          Specific and testable — start typing to pick from common goals, or write your own.
+          Vague goals like "be healthier" will be rejected.
         </p>
         <div class="tag-input" data-field="goals">
           <div class="tags" id="goals-tags"></div>
@@ -46,6 +47,7 @@
           <div class="tags" id="candidates-tags"></div>
           <input type="text" id="candidate-input" placeholder="e.g. creatine monohydrate" autocomplete="off" />
         </div>
+        <p class="field-error" id="candidates-error" role="alert" hidden></p>
       </section>
 
       <section class="field-group budget-group">
