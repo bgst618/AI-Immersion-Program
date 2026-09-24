@@ -174,6 +174,10 @@ const CONFIDENCE_EXPLANATION = {
 
 const POSITIVE_VERDICTS = new Set(["Keep", "Take"]);
 
+// The API keeps "Remove" as the verdict value; users see the softer label,
+// since most removals mean "no support for your goals", not "harmful".
+const VERDICT_LABEL = { Remove: "Not needed for your goals" };
+
 function renderResults(evaluation) {
   resultsCards.innerHTML = "";
 
@@ -195,7 +199,7 @@ function renderResults(evaluation) {
 
     const verdict = document.createElement("p");
     verdict.className = `verdict ${POSITIVE_VERDICTS.has(item.verdict) ? "positive" : "negative"}`;
-    verdict.textContent = item.verdict;
+    verdict.textContent = VERDICT_LABEL[item.verdict] || item.verdict;
 
     const badge = document.createElement("span");
     const confidenceClass = CONFIDENCE_CLASS[item.confidence] || "Insufficient";

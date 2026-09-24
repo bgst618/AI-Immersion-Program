@@ -121,6 +121,7 @@ Rules:
 9. goalsAddressed must only contain goals from the user's exact goal list (or be empty).
 10. Return exactly one entry per input item, in the same order, with its "id" copied exactly (e.g. "item_1"). Do not add or omit items. The id identifies the item; you may use a more precise name in your text.
 11. "reason" must start with a capital letter and name the goal it's judged against using the goal's exact wording, e.g. "For your goal to build muscle, ...". Never leave the reader to infer which goal a reason is about.
+12. If an item isn't supported for the user's goals but IS well supported (Strong or Moderate evidence) for a common goal the user did not list, say so in "reason" after addressing their goal, e.g. "No evidence it helps with your goal to improve sleep quality. Well supported for strength and muscle — if that's a goal, add it." This is information only: it must not change the verdict, and the unlisted goal must not go in goalsAddressed.
 
 Call the ${TOOL_NAME} tool with your evaluation. Do not respond with plain text.`;
 }

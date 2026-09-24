@@ -248,6 +248,15 @@
       "evidence_note": "No benefit expected with adequate stores, plus overload risk. Second bloodwork flip check."
     },
     {
+      "id": "unlisted-goal-creatine-sleep",
+      "category": "unlisted_goal_note",
+      "input": { "stack": ["creatine"], "goals": ["improve sleep quality"], "candidates": [], "budget_usd_month": 50, "bloodwork": null },
+      "expect": {
+        "creatine": { "status": "current", "acceptable_verdicts": ["Remove"], "acceptable_confidence": ["Insufficient", "Weak", "Moderate"], "reason_must_mention": ["muscle", "strength"] }
+      },
+      "evidence_note": "Not supported for sleep, but well supported for muscle/strength, which the user didn't list. The reason must point that out (prompt rule 12) without changing the verdict."
+    },
+    {
       "id": "known-gap-synonym-dedupe",
       "category": "known_gap",
       "input": { "stack": ["fish oil"], "goals": ["lower triglycerides"], "candidates": ["omega-3"], "budget_usd_month": 50, "bloodwork": null },
