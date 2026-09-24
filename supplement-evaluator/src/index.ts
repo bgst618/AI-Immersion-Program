@@ -2,7 +2,7 @@ import { assembleReports } from "./assemble";
 import { ClaudeCallError, ClaudeValidationError, evaluateWithClaude, resolveModel } from "./claude";
 import type { Env } from "./env";
 import { compileItems } from "./items";
-import { IntakeSchema, findOffListGoals, type RejectedEntry } from "./schema";
+import { IntakeSchema, findDeniedItems, findOffListGoals, type RejectedEntry } from "./schema";
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -24,10 +24,21 @@ async function handleEvaluate(request: Request, env: Env): Promise<Response> {
   }
 
   // Step 1: validate intake. .strict() schemas reject unknown keys (e.g. "diet");
-  // goals must be exact entries from the curated goal list. Nothing rejected
-  // here ever reaches the model.
+  // goals must be exact entries from the curated goal list; items can't be
+  // denylisted drugs. Nothing rejected here ever reaches the model.
   const parsed = IntakeSchema.safeParse(body);
   if (!parsed.success) {
+    const deniedItems = findDeniedItems(parsed.error);
+    if (deniedItems.length > 0) {
+      return json(
+        {
+          error: "denied_substance",
+          message: `Only supplements can be evaluated, not controlled substances or other drugs. Remove: ${quoteList(deniedItems)}.`,
+          rejected: deniedItems,
+        },
+        400,
+      );
+    }
     const offListGoals = findOffListGoals(parsed.error);
     if (offListGoals.length > 0) {
       return json(

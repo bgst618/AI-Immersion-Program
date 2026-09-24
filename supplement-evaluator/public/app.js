@@ -313,13 +313,20 @@ function ingredientValidator(errorEl) {
   };
 }
 
+const stackError = document.getElementById("stack-error");
+const candidatesError = document.getElementById("candidates-error");
+
+// errorEl lets a field clear a server error (e.g. a denied substance) once
+// the user edits or removes tags.
 const stackField = createTagInput("stack", {
   getOptions: ingredientOptions,
-  validate: ingredientValidator(document.getElementById("stack-error")),
+  validate: ingredientValidator(stackError),
+  errorEl: stackError,
 });
 const candidatesField = createTagInput("candidates", {
   getOptions: ingredientOptions,
-  validate: ingredientValidator(document.getElementById("candidates-error")),
+  validate: ingredientValidator(candidatesError),
+  errorEl: candidatesError,
 });
 const goalsField = createTagInput("goals", {
   getOptions: goalOptions,
@@ -592,7 +599,17 @@ form.addEventListener("submit", async (e) => {
 
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      if (body.error === "not_on_allowlist") {
+      if (body.error === "denied_substance") {
+        // Shown under each field; the tag stays so the user can see what to remove.
+        for (const [field, errorEl] of [["stack", stackError], ["candidates", candidatesError]]) {
+          const denied = body.rejected.filter((r) => r.field === field);
+          if (denied.length === 0) continue;
+          errorEl.hidden = false;
+          errorEl.textContent = denied
+            .map((r) => `"${r.value}" is a controlled substance or drug (${r.substance}), not a supplement, so it can't be evaluated. Remove it to continue.`)
+            .join(" ");
+        }
+      } else if (body.error === "not_on_allowlist") {
         // Only reachable if the goal list changed after this page loaded.
         goalsError.hidden = false;
         goalsError.textContent = `${body.message} Refresh the page to get the current list.`;

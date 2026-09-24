@@ -77,6 +77,64 @@ describe("POST /api/evaluate reaches the model for valid intake (control)", () =
   });
 });
 
+describe("POST /api/evaluate item denylist", () => {
+  const denied: [string, string][] = [
+    ["cocaine", "cocaine"],
+    ["nicotine", "nicotine"],
+    ["meth", "methamphetamine"],
+    ["crystal meth", "methamphetamine"],
+    ["Adderall 20mg", "amphetamine"],
+    ["cocain", "cocaine"],
+  ];
+
+  for (const [value, substance] of denied) {
+    it(`rejects "${value}" in the stack with 400 before calling the model`, async () => {
+      await expectRejectedBeforeModel({ ...validBody, stack: [value] }, "denied_substance", [
+        { field: "stack", value, substance },
+      ]);
+    });
+
+    it(`rejects "${value}" as a candidate with 400 before calling the model`, async () => {
+      await expectRejectedBeforeModel({ ...validBody, candidates: [value] }, "denied_substance", [
+        { field: "candidates", value, substance },
+      ]);
+    });
+  }
+
+  it("rejects the whole request when one item among valid ones is denied", async () => {
+    await expectRejectedBeforeModel({ ...validBody, stack: ["fish oil", "nicotine gum", "multivitamin"] }, "denied_substance", [
+      { field: "stack", value: "nicotine gum", substance: "nicotine" },
+    ]);
+  });
+
+  it("reports a denied item ahead of an off-list goal", async () => {
+    await expectRejectedBeforeModel({ ...validBody, stack: ["meth"], goals: ["be smarter"] }, "denied_substance", [
+      { field: "stack", value: "meth", substance: "methamphetamine" },
+    ]);
+  });
+
+  // The point of free-text items: an unfamiliar ingredient from someone
+  // else's stack gets evaluated, not blocked (red-team #4 flags the unknown ones).
+  it("sends niche, made-up, and hazardous names to the model instead of blocking them", async () => {
+    const candidates = ["turkesterone", "BPC-157", "shilajit", "zorbitrex-9"];
+    vi.mocked(evaluateWithClaude).mockResolvedValueOnce(outputFor(1 + candidates.length));
+    const response = await evaluate({ ...validBody, stack: ["DNP"], candidates });
+    expect(response.status).toBe(200);
+    expect(evaluateWithClaude).toHaveBeenCalledTimes(1);
+    const compiled = vi.mocked(evaluateWithClaude).mock.calls[0]![3];
+    expect(compiled.map((item) => [item.name, item.unrecognized ?? false])).toEqual([
+      ["DNP", false],
+      ["turkesterone", false],
+      ["BPC-157", false],
+      ["shilajit", false],
+      ["zorbitrex-9", true],
+    ]);
+    // DNP still gets the forced hazard card (red-team #1), not a denial.
+    const body = (await response.json()) as { items: { name: string; confidence: string }[] };
+    expect(body.items[0]).toMatchObject({ name: "DNP", confidence: "Known hazard" });
+  });
+});
+
 describe("POST /api/evaluate goal allowlist", () => {
   for (const goal of ["be smarter", "be healthier", "sleep better"]) {
     it(`rejects off-list goal "${goal}" with 400 before calling the model`, async () => {

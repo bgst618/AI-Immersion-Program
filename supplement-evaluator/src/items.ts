@@ -90,7 +90,7 @@ function allowedEdits(length: number): number {
 }
 
 // Levenshtein distance <= max, bailing out as soon as a row exceeds it.
-function withinEditDistance(a: string, b: string, max: number): boolean {
+export function withinEditDistance(a: string, b: string, max: number): boolean {
   if (Math.abs(a.length - b.length) > max) return false;
   let previous = Array.from({ length: b.length + 1 }, (_, j) => j);
   for (let i = 1; i <= a.length; i++) {

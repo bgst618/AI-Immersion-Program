@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { GOALS } from "./catalog";
+import { findDeniedSubstance } from "./denylist";
 
 // Fixed dropdown of common blood work markers (Open Decision #3: dropdown, not free text).
 // Each marker carries its own unit so the client never has to submit one.
@@ -34,6 +35,20 @@ const trimmedNonEmpty = z
   .max(200)
   .refine((text) => !CONTROL_CHARS.test(text), "must be a single line without control characters");
 
+// Stack and candidate names stay free text — niche, misspelled, and made-up
+// names still go to the model, flagged [unrecognized] by items.ts — except
+// controlled substances and other drugs on the denylist, rejected here.
+const ItemNameSchema = trimmedNonEmpty.superRefine((name, ctx) => {
+  const denied = findDeniedSubstance(name);
+  if (denied) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `${denied.name} is a controlled substance or drug, not a supplement`,
+      params: { deniedSubstance: denied.name, value: name },
+    });
+  }
+});
+
 // Goals must be exact entries from the curated goal list in catalog.json — the
 // same list the UI's dropdown offers — with no trimming or case folding. The
 // server never trusts that the dropdown was used.
@@ -58,10 +73,10 @@ export const BloodWorkEntrySchema = z
 // field (e.g. "diet") can sneak in anywhere in the payload.
 export const IntakeSchema = z
   .object({
-    stack: z.array(trimmedNonEmpty).max(15).default([]),
+    stack: z.array(ItemNameSchema).max(15).default([]),
     goals: z.array(GoalSchema).min(1).max(5),
     budget: BudgetSchema,
-    candidates: z.array(trimmedNonEmpty).max(5).default([]),
+    candidates: z.array(ItemNameSchema).max(5).default([]),
     bloodWork: z.array(BloodWorkEntrySchema).max(BLOOD_MARKERS.length).default([]),
   })
   .strict()
@@ -81,6 +96,21 @@ export type Budget = z.infer<typeof BudgetSchema>;
 export interface RejectedEntry {
   field: "stack" | "candidates" | "goals";
   value: string;
+  // Denied items only: which denylist entry matched.
+  substance?: string;
+}
+
+// Stack/candidate names that matched the denylist, from a failed IntakeSchema parse.
+export function findDeniedItems(error: z.ZodError): RejectedEntry[] {
+  const rejected: RejectedEntry[] = [];
+  for (const issue of error.issues) {
+    const field = issue.path[0];
+    if (issue.code !== z.ZodIssueCode.custom || !issue.params?.deniedSubstance) continue;
+    if (field === "stack" || field === "candidates") {
+      rejected.push({ field, value: issue.params.value, substance: issue.params.deniedSubstance });
+    }
+  }
+  return rejected;
 }
 
 // Goals that aren't on the goal list, from a failed IntakeSchema parse. Other

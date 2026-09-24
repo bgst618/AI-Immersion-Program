@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import evalFile from "../eval/eval-cases.json";
 import { GOALS } from "../src/catalog";
-import { IntakeSchema, findOffListGoals } from "../src/schema";
+import { IntakeSchema, findDeniedItems, findOffListGoals } from "../src/schema";
 
 const validBudget = { amount: 40, period: "month", currency: "USD" };
 
@@ -97,6 +97,30 @@ describe("goal allowlist", () => {
     });
     expect(otherEnums.success).toBe(false);
     expect(findOffListGoals(otherEnums.error!)).toEqual([]);
+  });
+});
+
+describe("item denylist", () => {
+  const base = { goals: ["build muscle"], budget: validBudget };
+
+  it("accepts free-text items, including niche and made-up names", () => {
+    for (const name of ["creatine", "turkesterone", "BPC-157", "zorbitrex-9", "Ashwagandha 600mg capsules"]) {
+      expect(IntakeSchema.safeParse({ ...base, stack: [name] }).success, name).toBe(true);
+    }
+  });
+
+  it("reports each denied item with its field and matched substance", () => {
+    const result = IntakeSchema.safeParse({ ...base, stack: ["fish oil", "cocaine"], candidates: ["Xanax"] });
+    expect(findDeniedItems(result.error!)).toEqual([
+      { field: "stack", value: "cocaine", substance: "cocaine" },
+      { field: "candidates", value: "Xanax", substance: "a benzodiazepine" },
+    ]);
+  });
+
+  it("ignores failures that aren't denylist hits", () => {
+    const result = IntakeSchema.safeParse({ ...base, stack: ["fish oil\u0000"] });
+    expect(result.success).toBe(false);
+    expect(findDeniedItems(result.error!)).toEqual([]);
   });
 });
 
