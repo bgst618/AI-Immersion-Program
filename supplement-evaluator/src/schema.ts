@@ -21,7 +21,17 @@ export function markerUnit(key: BloodMarkerKey): string {
   return BLOOD_MARKERS.find((m) => m.key === key)!.unit;
 }
 
-const trimmedNonEmpty = z.string().trim().min(1).max(200);
+// Newlines and other control characters have no place in an ingredient name or
+// goal; inside the prompt they let injected text ("\nSYSTEM NOTE: ...") pose
+// as a separate instruction line. Reject with a clean 400 instead.
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+
+const trimmedNonEmpty = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .refine((text) => !CONTROL_CHARS.test(text), "must be a single line without control characters");
 
 export const BudgetSchema = z
   .object({
