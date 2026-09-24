@@ -1,6 +1,16 @@
-import type { Budget, ClaudeItemOutput, ClaudeToolOutput, CompiledItem, ItemReport, SuggestionReport } from "./schema";
+import { atTargetNote, markerAtTarget } from "./bloodwork";
+import type {
+  BloodWorkEntry,
+  Budget,
+  ClaudeItemOutput,
+  ClaudeToolOutput,
+  CompiledItem,
+  ItemReport,
+  SuggestionReport,
+} from "./schema";
 import { BRAND_PATTERN, findIngredient, normalizeTerm } from "./catalog";
-import { DISCLAIMER, EvaluationResponseSchema, monthlyBudget, type EvaluationResponse } from "./schema";
+import { findHazard, type Hazard } from "./hazards";
+import { DISCLAIMER, EvaluationResponseSchema, KNOWN_HAZARD, monthlyBudget, type EvaluationResponse } from "./schema";
 
 export interface StructureCheckResult {
   ok: boolean;
@@ -11,6 +21,8 @@ const VALID_VERDICTS_BY_STATUS: Record<CompiledItem["status"], ReadonlyArray<Cla
   current: ["Keep", "Remove"],
   candidate: ["Take", "Don't"],
 };
+
+const NEGATIVE_VERDICTS: ReadonlySet<ClaudeItemOutput["verdict"]> = new Set(["Remove", "Don't"]);
 
 // Step 7 (part 1): structural checks the model can violate. Any failure here
 // should trigger the one allowed retry in claude.ts, not silent correction.
@@ -54,6 +66,14 @@ export function validateStructure(
       return {
         ok: false,
         message: `${label} (${expected.status}) has verdict "${out.verdict}"; must be one of ${allowedVerdicts.join(" or ")}.`,
+      };
+    }
+
+    // A Remove/Don't that still lists goals it "addresses" contradicts itself.
+    if (NEGATIVE_VERDICTS.has(out.verdict) && out.goalsAddressed.length > 0) {
+      return {
+        ok: false,
+        message: `${label} has verdict "${out.verdict}" but lists goalsAddressed ${JSON.stringify(out.goalsAddressed)}; goalsAddressed must be empty for Remove/Don't.`,
       };
     }
 
@@ -222,15 +242,63 @@ function applyOverrides(item: ClaudeItemOutput): ClaudeItemOutput {
     budgetFlag = false;
   }
 
-  return { ...item, verdict, confidence, budgetFlag };
+  // Keep the negative-verdict invariant (validateStructure) true after an override flips the verdict.
+  const goalsAddressed = NEGATIVE_VERDICTS.has(verdict) ? [] : item.goalsAddressed;
+
+  return { ...item, verdict, confidence, budgetFlag, goalsAddressed };
 }
 
-export function assembleReports(compiledItems: CompiledItem[], output: ClaudeToolOutput): EvaluationResponse {
+// Known hazards (hazards.ts) replace the model's report wholesale — verdict,
+// confidence, and every text field — so no model wording can frame a toxic
+// substance as an ordinary weak-evidence supplement. Runs last, after every
+// other rule, so nothing can soften it.
+function hazardReport(compiled: CompiledItem, hazard: Hazard): ItemReport {
+  return {
+    name: compiled.name,
+    status: compiled.status,
+    verdict: compiled.status === "current" ? "Remove" : "Don't",
+    confidence: KNOWN_HAZARD,
+    goalsAddressed: [],
+    evidenceType: "documented human toxicity, including deaths",
+    budgetFlag: false,
+    reason: `Known hazard, whatever your goals: ${hazard.name} is not a supplement. ${hazard.hazard} Do not take it.`,
+    mechanism: hazard.mechanism,
+    ...mergedNames(compiled),
+  };
+}
+
+// Synonyms items.ts merged into this item, so the report shows them.
+function mergedNames(compiled: CompiledItem): Pick<ItemReport, "alsoSubmittedAs"> {
+  return compiled.alsoSubmittedAs ? { alsoSubmittedAs: compiled.alsoSubmittedAs } : {};
+}
+
+// Blood work already at/above target (bloodwork.ts): a Keep/Take can't be
+// Strong — the user may not need more — and the reason must cite the value.
+// Remove/Don't is left alone ("Remove, Strong: already at 13%" is a sound answer).
+function applyBloodWorkCap(compiled: CompiledItem, item: ClaudeItemOutput, bloodWork: BloodWorkEntry[]): ClaudeItemOutput {
+  if (item.verdict !== "Keep" && item.verdict !== "Take") return item;
+  const atTarget = markerAtTarget(compiled.name, bloodWork);
+  if (!atTarget) return item;
+  return {
+    ...item,
+    confidence: item.confidence === "Strong" ? "Moderate" : item.confidence,
+    reason: `${item.reason.trimEnd()} ${atTargetNote(atTarget)}`,
+  };
+}
+
+export function assembleReports(
+  compiledItems: CompiledItem[],
+  output: ClaudeToolOutput,
+  bloodWork: BloodWorkEntry[] = [],
+): EvaluationResponse {
   const byId = new Map(output.items.map((item) => [item.id, item] as const));
 
   const items: ItemReport[] = compiledItems.map((compiled) => {
+    const hazard = findHazard(compiled.name);
+    if (hazard) return hazardReport(compiled, hazard);
+
     const raw = byId.get(compiled.id)!;
-    const corrected = applyOverrides(raw);
+    const corrected = applyBloodWorkCap(compiled, applyOverrides(raw), bloodWork);
     return {
       name: compiled.name,
       status: compiled.status,
@@ -241,6 +309,7 @@ export function assembleReports(compiledItems: CompiledItem[], output: ClaudeToo
       budgetFlag: corrected.budgetFlag,
       reason: capitalizeFirstLetter(corrected.reason),
       mechanism: corrected.mechanism,
+      ...mergedNames(compiled),
     };
   });
 

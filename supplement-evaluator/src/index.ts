@@ -48,7 +48,7 @@ async function handleEvaluate(request: Request, env: Env): Promise<Response> {
 
   try {
     const claudeOutput = await evaluateWithClaude(env.NVIDIA_API_KEY, resolveModel(env.MODEL), intake, items);
-    const evaluation = assembleReports(items, claudeOutput);
+    const evaluation = assembleReports(items, claudeOutput, intake.bloodWork);
     return json(evaluation, 200);
   } catch (error) {
     if (error instanceof ClaudeValidationError) {

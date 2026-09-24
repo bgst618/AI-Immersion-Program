@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { assembleReports } from "../src/assemble";
 import { normalizeTerm } from "../src/catalog";
 import { evaluateWithClaude, resolveModel } from "../src/claude";
+import { findFirstVagueGoal } from "../src/goals";
 import { compileItems } from "../src/items";
 import {
   IntakeSchema,
@@ -120,13 +121,14 @@ const evalFile: EvalFile = JSON.parse(readFileSync(join(__dirname, "eval-cases.j
 const BLOODWORK_KEY_MAP: Record<string, BloodMarkerKey> = {
   vitamin_d_25oh: "vitamin_d",
   ferritin: "ferritin",
+  omega3_index: "omega3_index",
 };
 
 const QUALITATIVE_VALUE_MAP: Record<BloodMarkerKey, Record<string, number>> = {
   vitamin_d: { low: 15, normal: 40 }, // ng/mL; deficient <20, sufficient ~30-100
   ferritin: { low: 15, normal: 80 }, // ng/mL; representative low vs. mid-normal
   vitamin_b12: { low: 150, normal: 500 }, // pg/mL; unused by current cases
-  omega3_index: { low: 3, normal: 6 }, // %; unused by current cases
+  omega3_index: { low: 3, normal: 6, high: 13 }, // %; target >= 8 (src/bloodwork.ts)
 };
 
 const unmappedMarkersSeen = new Set<string>();
@@ -225,7 +227,7 @@ async function runOne(task: Task, apiKey: string, model: string): Promise<RunRes
     // evaluateWithClaude, shared with the Worker, so none are layered here.
     await waitForRateLimitSlot();
     const output = await evaluateWithClaude(apiKey, model, task.intake, task.items);
-    const evaluation = assembleReports(task.items, output);
+    const evaluation = assembleReports(task.items, output, task.intake.bloodWork);
     return { ok: true, items: evaluation.items, suggestions: evaluation.suggestions };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -477,9 +479,37 @@ function resolveCases(): RawCase[] {
   return selected;
 }
 
+// --- Preflight: every case must be a request production would accept ----
+//
+// The runner calls evaluateWithClaude directly, bypassing index.ts's step-1
+// checks, so a fixture the Worker would reject (e.g. a vague goal like
+// "improve bone health") used to be scored anyway and pass quietly on an
+// input no real user can send. Fail loudly instead, before spending any quota.
+
+function preflightCases(cases: RawCase[]): string[] {
+  const problems: string[] = [];
+  for (const c of cases) {
+    const vague = findFirstVagueGoal(c.input.goals ?? []);
+    if (vague) problems.push(`${c.id}: goal "${vague.goal}" is rejected by the vague-goal filter (400 vague_goal in production)`);
+    try {
+      const intake = mapInput(c.input);
+      if (compileItems(intake.stack, intake.candidates).length === 0) problems.push(`${c.id}: no items to evaluate`);
+    } catch (error) {
+      problems.push(`${c.id}: input fails IntakeSchema (400 invalid_request in production): ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return problems;
+}
+
 // --- Main ----------------------------------------------------------------
 
 async function main() {
+  const problems = preflightCases(evalFile.cases);
+  if (problems.length > 0) {
+    console.error(`eval-cases.json has ${problems.length} case(s) production would reject. Fix them before running:\n- ${problems.join("\n- ")}`);
+    process.exit(1);
+  }
+
   const apiKey = loadApiKey();
   const model = resolveModelFromEnv();
   const runsPerCase = resolveRunsPerCase();

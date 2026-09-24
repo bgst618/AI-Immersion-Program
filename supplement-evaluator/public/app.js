@@ -7,8 +7,18 @@ const BLOOD_MARKERS = [
 ];
 
 // Mirrors the code-side check in src/goals.ts so users get instant feedback;
-// the server is still the source of truth.
-const VAGUE_PATTERNS = [/\bwellness\b/i, /\bhealthier\b/i, /\bhealth\b/i, /\bfeel better\b/i, /\boverall\b/i, /\bgeneral\b/i];
+// the server is still the source of truth. Word-start stems, not exact words.
+const VAGUE_PATTERNS = [
+  /\bhealth/i,
+  /\bwell/i,
+  /\boverall/i,
+  /\bgeneral/i,
+  /\b(feel|be|get|do|live|look)(ing)?\s+better\b/i,
+  /^\s*(a\s+)?better(\s+(me|myself|life|living|overall))?\s*$/i,
+  /\blongevity/i,
+  /\blifespan/i,
+  /\bliv(e|ing) long/i,
+];
 
 function isVagueGoal(goal) {
   return VAGUE_PATTERNS.some((p) => p.test(goal));
@@ -325,6 +335,7 @@ const CONFIDENCE_CLASS = {
   Moderate: "Moderate",
   Weak: "Weak",
   "Insufficient evidence to rate": "Insufficient",
+  "Known hazard": "Hazard",
 };
 
 // Confidence means how sure we are in the verdict, based on evidence
@@ -334,6 +345,7 @@ const CONFIDENCE_EXPLANATION = {
   Moderate: "Human trials point this way, but they're small, few, or industry-funded.",
   Weak: "Human evidence exists but is low quality or inconsistent.",
   "Insufficient evidence to rate": "Little or no human research exists on this ingredient for this goal.",
+  "Known hazard": "Documented toxicity and deaths in humans. This is a safety warning, not an evidence rating.",
 };
 
 const POSITIVE_VERDICTS = new Set(["Keep", "Take"]);
@@ -341,6 +353,9 @@ const POSITIVE_VERDICTS = new Set(["Keep", "Take"]);
 // The API keeps "Remove" as the verdict value; users see the softer label,
 // since most removals mean "no support for your goals", not "harmful".
 const VERDICT_LABEL = { Remove: "Not needed for your goals" };
+
+// A known hazard (src/hazards.ts) must never get the soft "Not needed" label.
+const HAZARD_VERDICT_LABEL = { Remove: "Stop taking: known hazard", "Don't": "Don't take: known hazard" };
 
 // Plain web search for the ingredient name only — never a product or store.
 function ingredientSearchUrl(name) {
@@ -376,9 +391,16 @@ function buildCard(item) {
 
   header.append(title, chip);
 
+  // Synonyms merged into this item by the server (e.g. cholecalciferol -> vitamin D3).
+  const alsoEntered = (item.alsoSubmittedAs || []).map((a) => `${a.name} (${a.status})`);
+  const alsoEl = document.createElement("p");
+  alsoEl.className = "also-entered";
+  alsoEl.textContent = `Also entered as: ${alsoEntered.join(", ")}`;
+
   const verdict = document.createElement("p");
   verdict.className = `verdict ${POSITIVE_VERDICTS.has(item.verdict) ? "positive" : "negative"}`;
-  verdict.textContent = VERDICT_LABEL[item.verdict] || item.verdict;
+  const labels = item.confidence === "Known hazard" ? HAZARD_VERDICT_LABEL : VERDICT_LABEL;
+  verdict.textContent = labels[item.verdict] || item.verdict;
 
   const badge = document.createElement("span");
   const confidenceClass = CONFIDENCE_CLASS[item.confidence] || "Insufficient";
@@ -410,7 +432,9 @@ function buildCard(item) {
   const mechanism = document.createElement("p");
   mechanism.textContent = item.mechanism;
 
-  card.append(header, verdict, ...badgeRow, confidenceExplainer, reasonLabel, reason, mechanismLabel, mechanism);
+  card.append(header);
+  if (alsoEntered.length > 0) card.appendChild(alsoEl);
+  card.append(verdict, ...badgeRow, confidenceExplainer, reasonLabel, reason, mechanismLabel, mechanism);
   if (item.verdict === "Take") card.appendChild(buildBuyingNote(item.name));
   return card;
 }

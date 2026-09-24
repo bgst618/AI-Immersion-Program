@@ -123,6 +123,34 @@ describe("reasonNamesGoal", () => {
   });
 });
 
+describe("goalsAddressed on negative verdicts (red-team #8)", () => {
+  it("fails validation when a Remove or Don't still lists goalsAddressed", () => {
+    const current: CompiledItem[] = [{ id: "item_1", name: "BCAAs", status: "current" }];
+    const remove = item({ status: "current", verdict: "Remove", reason: "For your goal to build muscle, RCTs show no added benefit." });
+    const removeResult = validateStructure(current, ["build muscle"], { suggestions: [], items: [remove] });
+    expect(removeResult.ok).toBe(false);
+    expect(removeResult.message).toMatch(/goalsAddressed must be empty/);
+
+    const candidate: CompiledItem[] = [{ id: "item_1", name: "tribulus", status: "candidate" }];
+    const dont = item({ verdict: "Don't", reason: "For your goal to build muscle, trials show no effect." });
+    expect(validateStructure(candidate, ["build muscle"], { suggestions: [], items: [dont] }).ok).toBe(false);
+  });
+
+  it("passes a negative verdict with an empty goalsAddressed", () => {
+    const current: CompiledItem[] = [{ id: "item_1", name: "BCAAs", status: "current" }];
+    const remove = item({ status: "current", verdict: "Remove", goalsAddressed: [], reason: "For your goal to build muscle, RCTs show no added benefit." });
+    expect(validateStructure(current, ["build muscle"], { suggestions: [], items: [remove] }).ok).toBe(true);
+  });
+
+  it("clears goalsAddressed when a code override flips the verdict to Don't", () => {
+    const compiled: CompiledItem[] = [{ id: "item_1", name: "obscure compound", status: "candidate" }];
+    const output: ClaudeToolOutput = { suggestions: [], items: [item({ isMainstreamHumanTested: false, verdict: "Take" })] };
+    const report = assembleReports(compiled, output).items[0]!;
+    expect(report.verdict).toBe("Don't");
+    expect(report.goalsAddressed).toEqual([]);
+  });
+});
+
 describe("checkContentGuard", () => {
   it("passes clean output", () => {
     const output: ClaudeToolOutput = { suggestions: [], items: [item()] };
@@ -325,6 +353,134 @@ describe("validateSuggestions", () => {
   it("converts weekly and yearly budgets to monthly", () => {
     expect(monthlyBudget({ amount: 12, period: "week", currency: "USD" })).toBeCloseTo(52);
     expect(monthlyBudget({ amount: 120, period: "year", currency: "USD" })).toBeCloseTo(10);
+  });
+});
+
+describe("blood-work cap (marker already at/above target)", () => {
+  const goal = "raise omega-3 index";
+  const compiled: CompiledItem[] = [{ id: "item_1", name: "fish oil", status: "current" }];
+  const keepStrong = item({
+    status: "current",
+    verdict: "Keep",
+    confidence: "Strong",
+    goalsAddressed: [goal],
+    reason: "For your goal to raise omega-3 index, multiple RCTs show fish oil raises it; 13% is already above typical targets.",
+  });
+
+  it("caps Keep/Strong at Moderate and cites the value (red-team case: omega-3 index 13%)", () => {
+    const report = assembleReports(compiled, { suggestions: [], items: [keepStrong] }, [{ marker: "omega3_index", value: 13 }]).items[0]!;
+    expect(report.verdict).toBe("Keep");
+    expect(report.confidence).toBe("Moderate");
+    expect(report.reason).toMatch(/Omega-3 Index is 13%/);
+    expect(report.reason).toMatch(/target of 8%/);
+  });
+
+  it("caps a candidate Take/Strong found via an alias (cholecalciferol, vitamin D 45 ng/mL)", () => {
+    const candidate: CompiledItem[] = [{ id: "item_1", name: "cholecalciferol", status: "candidate" }];
+    const output: ClaudeToolOutput = { suggestions: [], items: [item({ goalsAddressed: [], reason: "For your goal to maintain bone density, strong RCT support." })] };
+    const report = assembleReports(candidate, output, [{ marker: "vitamin_d", value: 45 }]).items[0]!;
+    expect(report.confidence).toBe("Moderate");
+    expect(report.reason).toMatch(/45 ng\/mL/);
+  });
+
+  it("adds the note without raising a Weak confidence", () => {
+    const output: ClaudeToolOutput = { suggestions: [], items: [{ ...keepStrong, confidence: "Weak" }] };
+    const report = assembleReports(compiled, output, [{ marker: "omega3_index", value: 13 }]).items[0]!;
+    expect(report.confidence).toBe("Weak");
+    expect(report.reason).toMatch(/13%/);
+  });
+
+  it("leaves Strong alone when the value is below target", () => {
+    const report = assembleReports(compiled, { suggestions: [], items: [keepStrong] }, [{ marker: "omega3_index", value: 5 }]).items[0]!;
+    expect(report.confidence).toBe("Strong");
+    expect(report.reason).not.toMatch(/Note:/);
+  });
+
+  it("leaves a confident Remove alone (already replete is a sound reason to remove)", () => {
+    const remove = { ...keepStrong, verdict: "Remove" as const, goalsAddressed: [] };
+    const report = assembleReports(compiled, { suggestions: [], items: [remove] }, [{ marker: "omega3_index", value: 13 }]).items[0]!;
+    expect(report.confidence).toBe("Strong");
+    expect(report.reason).not.toMatch(/Note:/);
+  });
+});
+
+describe("merged synonyms in the report (red-team #7)", () => {
+  it("carries alsoSubmittedAs through to the item report, and omits it when nothing merged", () => {
+    const compiled: CompiledItem[] = [
+      { id: "item_1", name: "vitamin D3", status: "current", alsoSubmittedAs: [{ name: "cholecalciferol", status: "candidate" }] },
+      { id: "item_2", name: "creatine monohydrate", status: "candidate" },
+    ];
+    const output: ClaudeToolOutput = {
+      suggestions: [],
+      items: [item({ status: "current", verdict: "Keep", confidence: "Moderate" }), item({ id: "item_2" })],
+    };
+    const [vitD, creatine] = assembleReports(compiled, output).items;
+    expect(vitD!.alsoSubmittedAs).toEqual([{ name: "cholecalciferol", status: "candidate" }]);
+    expect(creatine).not.toHaveProperty("alsoSubmittedAs");
+  });
+});
+
+describe("known-hazard override", () => {
+  const goals = ["lose body fat"];
+
+  it("forces Remove + Known hazard for a current DNP item the model rated like weak evidence", () => {
+    const compiled: CompiledItem[] = [{ id: "item_1", name: "DNP", status: "current" }];
+    const output: ClaudeToolOutput = {
+      suggestions: [],
+      items: [
+        item({
+          status: "current",
+          verdict: "Remove",
+          confidence: "Moderate",
+          goalsAddressed: goals,
+          evidenceType: "a few small human trials",
+          reason: "For your goal to lose body fat, evidence is limited and side effects are possible.",
+          mechanism: "Raises metabolic rate, increasing energy expenditure.",
+        }),
+      ],
+    };
+    const report = assembleReports(compiled, output).items[0]!;
+    expect(report.verdict).toBe("Remove");
+    expect(report.confidence).toBe("Known hazard");
+    expect(report.goalsAddressed).toEqual([]);
+    expect(report.budgetFlag).toBe(false);
+    expect(report.reason).toMatch(/known hazard/i);
+    expect(report.reason).toMatch(/deaths/i);
+    expect(report.reason).not.toMatch(/evidence is limited/i);
+    expect(report.mechanism).not.toBe("Raises metabolic rate, increasing energy expenditure.");
+    expect(report.evidenceType).toMatch(/toxicity/i);
+    expect(report.name).toBe("DNP");
+  });
+
+  it("forces Don't for a candidate even when the model said Take/Strong with budgetFlag", () => {
+    const compiled: CompiledItem[] = [{ id: "item_1", name: "2,4-dinitrophenol", status: "candidate" }];
+    const output: ClaudeToolOutput = {
+      suggestions: [],
+      items: [item({ verdict: "Take", confidence: "Strong", budgetFlag: true, goalsAddressed: [] })],
+    };
+    const report = assembleReports(compiled, output).items[0]!;
+    expect(report.verdict).toBe("Don't");
+    expect(report.confidence).toBe("Known hazard");
+    expect(report.budgetFlag).toBe(false);
+  });
+
+  it("leaves non-hazard items in the same request untouched", () => {
+    const compiled: CompiledItem[] = [
+      { id: "item_1", name: "creatine monohydrate", status: "candidate" },
+      { id: "item_2", name: "DNP", status: "candidate" },
+    ];
+    const output: ClaudeToolOutput = {
+      suggestions: [],
+      items: [item(), item({ id: "item_2", verdict: "Don't", confidence: "Weak", goalsAddressed: [] })],
+    };
+    const [creatine, dnp] = assembleReports(compiled, output).items;
+    expect(creatine!.confidence).toBe("Strong");
+    expect(dnp!.confidence).toBe("Known hazard");
+  });
+
+  it("the model itself cannot emit Known hazard (code-only value)", () => {
+    const parsed = ClaudeToolOutputSchema.safeParse({ suggestions: [], items: [item({ confidence: "Known hazard" as never })] });
+    expect(parsed.success).toBe(false);
   });
 });
 

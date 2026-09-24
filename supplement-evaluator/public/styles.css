@@ -314,6 +314,12 @@ summary {
   color: var(--muted);
 }
 
+.also-entered {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 0.25rem 0 0;
+}
+
 .verdict {
   font-size: 1.4rem;
   font-weight: 700;
@@ -356,6 +362,11 @@ summary {
 .badge.Insufficient {
   background: rgba(138, 146, 166, 0.15);
   color: var(--insufficient);
+}
+
+.badge.Hazard {
+  background: rgba(255, 107, 107, 0.15);
+  color: var(--danger);
 }
 
 .badge.budget-flag {

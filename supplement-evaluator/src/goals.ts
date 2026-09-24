@@ -1,12 +1,22 @@
 // Step 1 enforcement: reject vague, untestable goals in code so the model
 // never has to make this judgment call. Extend VAGUE_PATTERNS to broaden coverage.
+// Stems match at the start of a word with any ending, so "health" also catches
+// "healthy"/"healthier" and "well" catches "wellness"/"well-being" — exact
+// words let "get healthy" through (red-team #6). Word-start only, so
+// "reduce swelling" is not caught by "well". "better" is only vague with
+// nothing specific attached ("feel better", "be better"); "sleep better" and
+// "recover better" name a testable target and pass.
+// Keep in sync with VAGUE_PATTERNS in public/app.js.
 const VAGUE_PATTERNS: RegExp[] = [
-  /\bwellness\b/i,
-  /\bhealthier\b/i,
-  /\bhealth\b/i,
-  /\bfeel better\b/i,
-  /\boverall\b/i,
-  /\bgeneral\b/i,
+  /\bhealth/i,
+  /\bwell/i,
+  /\boverall/i,
+  /\bgeneral/i,
+  /\b(feel|be|get|do|live|look)(ing)?\s+better\b/i,
+  /^\s*(a\s+)?better(\s+(me|myself|life|living|overall))?\s*$/i,
+  /\blongevity/i,
+  /\blifespan/i,
+  /\bliv(e|ing) long/i,
 ];
 
 export interface VagueGoalResult {

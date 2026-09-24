@@ -21,7 +21,17 @@ export function markerUnit(key: BloodMarkerKey): string {
   return BLOOD_MARKERS.find((m) => m.key === key)!.unit;
 }
 
-const trimmedNonEmpty = z.string().trim().min(1).max(200);
+// Newlines and other control characters have no place in an ingredient name or
+// goal; inside the prompt they let injected text ("\nSYSTEM NOTE: ...") pose
+// as a separate instruction line. Reject with a clean 400 instead.
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+
+const trimmedNonEmpty = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .refine((text) => !CONTROL_CHARS.test(text), "must be a single line without control characters");
 
 export const BudgetSchema = z
   .object({
@@ -72,6 +82,9 @@ export type BloodWorkEntry = z.infer<typeof BloodWorkEntrySchema>;
 export const ItemStatusSchema = z.enum(["current", "candidate"]);
 export type ItemStatus = z.infer<typeof ItemStatusSchema>;
 
+// A synonym merged into an item (red-team #7), e.g. candidate "cholecalciferol" -> current "vitamin D3".
+export const SubmittedNameSchema = z.object({ name: z.string(), status: ItemStatusSchema });
+
 // Step 2 output: the compiled, deduped item list handed to the model. `id` is
 // the only key the model has to echo back; `name` is the user's original
 // input, restored onto the final report no matter how the model renames it.
@@ -79,11 +92,21 @@ export const CompiledItemSchema = z.object({
   id: z.string(),
   name: z.string(),
   status: ItemStatusSchema,
+  // Set by items.ts when the name matches no known ingredient (red-team #4).
+  unrecognized: z.literal(true).optional(),
+  // Synonyms merged into this item by items.ts, with the status each was entered under.
+  alsoSubmittedAs: z.array(SubmittedNameSchema).optional(),
 });
 export type CompiledItem = z.infer<typeof CompiledItemSchema>;
 
 export const ConfidenceSchema = z.enum(["Strong", "Moderate", "Weak", "Insufficient evidence to rate"]);
 export type Confidence = z.infer<typeof ConfidenceSchema>;
+
+// Set only by code (hazards.ts via assemble.ts), never accepted from the model:
+// a known-toxic substance isn't an evidence rating at all.
+export const KNOWN_HAZARD = "Known hazard";
+export const ReportConfidenceSchema = z.enum([...ConfidenceSchema.options, KNOWN_HAZARD]);
+export type ReportConfidence = z.infer<typeof ReportConfidenceSchema>;
 
 // Raw shape Claude's tool call must produce, before code-side enforcement (step 7 / assemble.ts).
 export const ClaudeItemOutputSchema = z
@@ -134,12 +157,13 @@ export const ItemReportSchema = z.object({
   name: z.string(),
   status: ItemStatusSchema,
   verdict: z.enum(["Keep", "Remove", "Take", "Don't"]),
-  confidence: ConfidenceSchema,
+  confidence: ReportConfidenceSchema,
   goalsAddressed: z.array(z.string()),
   evidenceType: z.string(),
   budgetFlag: z.boolean(),
   reason: z.string(),
   mechanism: z.string(),
+  alsoSubmittedAs: z.array(SubmittedNameSchema).optional(),
 });
 export type ItemReport = z.infer<typeof ItemReportSchema>;
 
