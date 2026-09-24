@@ -183,6 +183,33 @@ describe("evaluateWithClaude", () => {
     expect(system.content).toContain('confidence="Insufficient evidence to rate"');
   });
 
+  describe("known hazards", () => {
+    it("makes no model call when every item is a known hazard", async () => {
+      const hazards: CompiledItem[] = [
+        { id: "item_1", name: "DNP", status: "current" },
+        { id: "item_2", name: "2,4-dinitrophenol 200mg", status: "candidate" },
+      ];
+      const result = await evaluateWithClaude("fake-key", DEFAULT_MODEL, { ...intake, goals: ["lose body fat"] }, hazards);
+      expect(result).toEqual({ items: [], suggestions: [] });
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it("leaves hazards out of a mixed request and validates only the remaining items", async () => {
+      const mixed: CompiledItem[] = [
+        { id: "item_1", name: "DNP", status: "current" },
+        { id: "item_2", name: "creatine monohydrate", status: "candidate" },
+      ];
+      (fetch as any).mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [{ ...validItem, id: "item_2" }] })));
+
+      const result = await evaluateWithClaude("fake-key", DEFAULT_MODEL, { ...intake, stack: ["DNP"] }, mixed);
+      expect(result.items.map((i) => i.id)).toEqual(["item_2"]);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      const prompt = JSON.parse((fetch as any).mock.calls[0][1].body).messages[1].content;
+      expect(prompt).toContain('- [item_2] "creatine monohydrate" (candidate)');
+      expect(prompt).not.toMatch(/item_1|DNP/);
+    });
+  });
+
   it("retries once when a Don't verdict still lists goalsAddressed (red-team #8), then succeeds", async () => {
     const contradictory = { ...validItem, verdict: "Don't", confidence: "Moderate", reason: "For your goal to build muscle, trials show no effect." };
     (fetch as any)

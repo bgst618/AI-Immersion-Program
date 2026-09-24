@@ -1,7 +1,7 @@
 // Substances with documented human lethality/toxicity independent of any goal.
-// These are not "thin evidence" cases: assemble.ts overrides the model's
-// verdict, confidence, and text for any match, so nothing the model writes can
-// soften the warning.
+// These are not "thin evidence" cases: claude.ts never sends a match to the
+// model, and assemble.ts writes its verdict, confidence, and text in code, so
+// nothing the model writes can soften the warning.
 //
 // To extend: add an entry with the standard name, every common alias (matched
 // as whole words anywhere in the user's input, case- and punctuation-
