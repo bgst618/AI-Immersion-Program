@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { BRAND_PATTERN, GOALS, INGREDIENTS, findIngredient, normalizeTerm } from "../src/catalog";
-import { checkGoal } from "../src/goals";
+import { isVagueGoal } from "../src/goals";
 
 describe("catalog", () => {
-  it("every curated goal passes the vague-goal filter", () => {
-    for (const goal of GOALS) expect(checkGoal(goal).vague, goal).toBe(false);
+  it("every goal on the allowlist is specific (passes the vague-goal patterns)", () => {
+    for (const goal of GOALS) expect(isVagueGoal(goal), goal).toBe(false);
+  });
+
+  it("has no duplicate goals", () => {
+    expect(new Set(GOALS.map(normalizeTerm)).size).toBe(GOALS.length);
   });
 
   it("no name or alias maps to two different ingredients", () => {

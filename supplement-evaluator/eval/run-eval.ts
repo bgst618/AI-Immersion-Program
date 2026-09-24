@@ -18,7 +18,6 @@ import { fileURLToPath } from "node:url";
 import { assembleReports } from "../src/assemble";
 import { normalizeTerm } from "../src/catalog";
 import { evaluateWithClaude, resolveModel } from "../src/claude";
-import { findFirstVagueGoal } from "../src/goals";
 import { compileItems } from "../src/items";
 import {
   IntakeSchema,
@@ -482,20 +481,19 @@ function resolveCases(): RawCase[] {
 // --- Preflight: every case must be a request production would accept ----
 //
 // The runner calls evaluateWithClaude directly, bypassing index.ts's step-1
-// checks, so a fixture the Worker would reject (e.g. a vague goal like
-// "improve bone health") used to be scored anyway and pass quietly on an
-// input no real user can send. Fail loudly instead, before spending any quota.
+// checks, so a fixture the Worker would reject (e.g. a goal like "improve bone
+// health" that isn't on the goal list) used to be scored anyway and pass
+// quietly on an input no real user can send. Fail loudly instead, before
+// spending any quota. IntakeSchema carries every step-1 rule.
 
 function preflightCases(cases: RawCase[]): string[] {
   const problems: string[] = [];
   for (const c of cases) {
-    const vague = findFirstVagueGoal(c.input.goals ?? []);
-    if (vague) problems.push(`${c.id}: goal "${vague.goal}" is rejected by the vague-goal filter (400 vague_goal in production)`);
     try {
       const intake = mapInput(c.input);
       if (compileItems(intake.stack, intake.candidates).length === 0) problems.push(`${c.id}: no items to evaluate`);
     } catch (error) {
-      problems.push(`${c.id}: input fails IntakeSchema (400 invalid_request in production): ${error instanceof Error ? error.message : String(error)}`);
+      problems.push(`${c.id}: input fails IntakeSchema (400 in production): ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   return problems;

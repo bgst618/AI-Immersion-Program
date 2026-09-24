@@ -87,6 +87,26 @@ form {
   position: relative;
 }
 
+/* Fixed-list fields (goals) get a dropdown caret: they don't take free text. */
+.tag-input.closed {
+  padding-right: 2rem;
+  cursor: text;
+}
+
+.tag-input.closed::after {
+  content: "▾";
+  position: absolute;
+  right: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.tag-input:focus-within {
+  border-color: var(--accent);
+}
+
 .suggestions {
   position: absolute;
   top: calc(100% + 4px);

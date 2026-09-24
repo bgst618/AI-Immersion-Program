@@ -6,33 +6,21 @@ const BLOOD_MARKERS = [
   { key: "omega3_index", label: "Omega-3 Index", unit: "%" },
 ];
 
-// Mirrors the code-side check in src/goals.ts so users get instant feedback;
-// the server is still the source of truth. Word-start stems, not exact words.
-const VAGUE_PATTERNS = [
-  /\bhealth/i,
-  /\bwell/i,
-  /\boverall/i,
-  /\bgeneral/i,
-  /\b(feel|be|get|do|live|look)(ing)?\s+better\b/i,
-  /^\s*(a\s+)?better(\s+(me|myself|life|living|overall))?\s*$/i,
-  /\blongevity/i,
-  /\blifespan/i,
-  /\bliv(e|ing) long/i,
-];
-
-function isVagueGoal(goal) {
-  return VAGUE_PATTERNS.some((p) => p.test(goal));
-}
-
 // Curated ingredients (+aliases), goals, and brand names. Same file the Worker
-// imports (src/catalog.ts). Until it loads, inputs work as plain free text.
+// imports (src/catalog.ts). Until it loads, ingredient inputs work as plain
+// free text; goals can only be picked from the list, so a failed load says so.
 let catalog = { ingredients: [], goals: [], brands: [] };
 fetch("/catalog.json")
-  .then((r) => (r.ok ? r.json() : catalog))
+  .then((r) => {
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  })
   .then((data) => {
     catalog = data;
   })
-  .catch(() => {});
+  .catch(() => {
+    showFormError("Couldn't load the goal list. Refresh the page to try again.");
+  });
 
 // Keep in sync with normalizeTerm in src/catalog.ts.
 function normalizeTerm(text) {
@@ -55,14 +43,18 @@ function goalOptions() {
 
 const MAX_SUGGESTIONS = 8;
 
-// Tag input with an accessible combobox dropdown. Free text is always allowed:
-// Enter adds the highlighted option if one is highlighted, otherwise the typed
-// text — canonicalized when it exactly matches a known name or alias.
-function createTagInput(fieldName, { getOptions, validate } = {}) {
+// Tag input with an accessible combobox dropdown. Free text is allowed by
+// default: Enter adds the highlighted option if one is highlighted, otherwise
+// the typed text — canonicalized when it exactly matches a known name or alias.
+// `closed: true` makes it a fixed-list multi-select instead (goals): focus opens
+// the full list, and only list entries can be added — typed text that doesn't
+// resolve to one is never submitted. The server enforces the same list.
+function createTagInput(fieldName, { getOptions, validate, closed = false, max = Infinity, errorEl, noMatch } = {}) {
   const container = document.querySelector(`.tag-input[data-field="${fieldName}"]`);
   const tagsEl = container.querySelector(".tags");
   const input = container.querySelector("input[type='text']");
   const tags = [];
+  const maxMessage = `You can pick up to ${max} ${fieldName}.`;
 
   const listbox = document.createElement("ul");
   listbox.className = "suggestions";
@@ -78,6 +70,13 @@ function createTagInput(fieldName, { getOptions, validate } = {}) {
   let matches = [];
   let active = -1;
 
+  // Closed lists report their own errors; free-text fields use `validate`.
+  function setError(message) {
+    if (!errorEl) return;
+    errorEl.hidden = !message;
+    errorEl.textContent = message || "";
+  }
+
   function render() {
     tagsEl.innerHTML = "";
     tags.forEach((tag, i) => {
@@ -90,6 +89,7 @@ function createTagInput(fieldName, { getOptions, validate } = {}) {
       removeBtn.textContent = "×";
       removeBtn.addEventListener("click", () => {
         tags.splice(i, 1);
+        setError("");
         render();
       });
       el.appendChild(removeBtn);
@@ -129,18 +129,30 @@ function createTagInput(fieldName, { getOptions, validate } = {}) {
       li.addEventListener("mousedown", (e) => {
         e.preventDefault();
         addTag(match.value);
+        // Closed lists stay open so several entries can be picked in a row.
+        if (closed) updateMatches();
       });
       listbox.appendChild(li);
     });
     listbox.hidden = false;
     input.setAttribute("aria-expanded", "true");
-    if (active >= 0) input.setAttribute("aria-activedescendant", `${fieldName}-option-${active}`);
-    else input.removeAttribute("aria-activedescendant");
+    if (active >= 0) {
+      input.setAttribute("aria-activedescendant", `${fieldName}-option-${active}`);
+      document.getElementById(`${fieldName}-option-${active}`).scrollIntoView({ block: "nearest" });
+    } else {
+      input.removeAttribute("aria-activedescendant");
+    }
   }
 
   function updateMatches() {
     const query = normalizeTerm(input.value);
-    if (!getOptions || !query) {
+    if (tags.length >= max) {
+      closeList();
+      if (query) setError(maxMessage);
+      return;
+    }
+    // Free-text fields suggest only while typing; closed lists also browse.
+    if (!getOptions || (!query && !closed)) {
       closeList();
       return;
     }
@@ -148,6 +160,10 @@ function createTagInput(fieldName, { getOptions, validate } = {}) {
     const scored = [];
     for (const option of getOptions()) {
       if (taken.has(normalizeTerm(option.value))) continue;
+      if (!query) {
+        scored.push({ value: option.value, matchedAlias: null, score: 0 });
+        continue;
+      }
       let best = null;
       for (const term of option.terms) {
         const t = normalizeTerm(term);
@@ -163,16 +179,27 @@ function createTagInput(fieldName, { getOptions, validate } = {}) {
       }
     }
     scored.sort((a, b) => a.score - b.score || a.value.localeCompare(b.value));
-    matches = scored.slice(0, MAX_SUGGESTIONS);
-    active = -1;
+    matches = closed ? scored : scored.slice(0, MAX_SUGGESTIONS);
+    // Closed lists: while searching, Enter takes the top match; browsing preselects nothing.
+    active = closed && query && matches.length > 0 ? 0 : -1;
     renderList();
   }
 
-  function canonicalize(raw) {
-    if (!getOptions) return raw;
+  // Exact name or alias -> its list entry; anything else -> undefined.
+  function resolve(raw) {
     const key = normalizeTerm(raw);
+    if (!getOptions || !key) return undefined;
     const option = getOptions().find((o) => o.terms.some((t) => normalizeTerm(t) === key));
-    return option ? option.value : raw;
+    return option && option.value;
+  }
+
+  function canonicalize(raw) {
+    return resolve(raw) ?? raw;
+  }
+
+  function rejectTypedText() {
+    const text = input.value.trim();
+    if (text) setError(tags.length >= max ? maxMessage : noMatch(text));
   }
 
   function addTag(raw) {
@@ -183,6 +210,11 @@ function createTagInput(fieldName, { getOptions, validate } = {}) {
       closeList();
       return;
     }
+    if (tags.length >= max) {
+      setError(maxMessage);
+      closeList();
+      return;
+    }
     // validate returns false to reject; the text stays in the box to edit.
     if (validate && validate(value) === false) {
       closeList();
@@ -190,39 +222,80 @@ function createTagInput(fieldName, { getOptions, validate } = {}) {
     }
     tags.push(value);
     input.value = "";
+    setError("");
     closeList();
     render();
   }
 
-  input.addEventListener("input", updateMatches);
+  input.addEventListener("input", () => {
+    setError("");
+    updateMatches();
+  });
+
+  if (closed) {
+    input.addEventListener("focus", updateMatches);
+    input.addEventListener("click", () => {
+      if (listbox.hidden) updateMatches();
+    });
+    // Clicking empty space in the box (or the caret) focuses the search and opens the list.
+    container.addEventListener("mousedown", (e) => {
+      if (e.target === container || e.target === tagsEl) {
+        e.preventDefault();
+        input.focus();
+        if (listbox.hidden) updateMatches();
+      }
+    });
+  }
 
   input.addEventListener("keydown", (e) => {
-    if (e.key === "ArrowDown" && matches.length > 0) {
+    if (e.key === "ArrowDown" && (matches.length > 0 || closed)) {
       e.preventDefault();
-      active = (active + 1) % matches.length;
-      renderList();
+      if (listbox.hidden) {
+        updateMatches();
+      } else {
+        active = (active + 1) % matches.length;
+        renderList();
+      }
     } else if (e.key === "ArrowUp" && matches.length > 0) {
       e.preventDefault();
       active = active <= 0 ? matches.length - 1 : active - 1;
       renderList();
     } else if (e.key === "Escape") {
       closeList();
-    } else if (e.key === "Enter" || e.key === ",") {
+    } else if (e.key === "Enter" || (e.key === "," && !closed)) {
       e.preventDefault();
-      addTag(active >= 0 ? matches[active].value : input.value);
+      if (!closed) {
+        addTag(active >= 0 ? matches[active].value : input.value);
+      } else {
+        const value = active >= 0 ? matches[active].value : resolve(input.value);
+        if (value) addTag(value);
+        else rejectTypedText();
+      }
     } else if (e.key === "Backspace" && input.value === "" && tags.length > 0) {
       tags.pop();
       render();
+      if (closed && !listbox.hidden) updateMatches();
     }
   });
 
   input.addEventListener("blur", () => {
     closeList();
-    if (input.value.trim()) addTag(input.value);
+    if (!input.value.trim()) return;
+    if (!closed) {
+      addTag(input.value);
+    } else {
+      const value = resolve(input.value);
+      if (value) addTag(value);
+      else rejectTypedText();
+    }
   });
 
   return {
     getTags: () => [...tags],
+    // Closed lists: typed text that never resolved to a list entry. Submit
+    // stops rather than silently dropping it.
+    hasUnresolvedText: () => closed && input.value.trim() !== "",
+    focus: () => input.focus(),
   };
 }
 
@@ -240,24 +313,27 @@ function ingredientValidator(errorEl) {
   };
 }
 
+const stackError = document.getElementById("stack-error");
+const candidatesError = document.getElementById("candidates-error");
+
+// errorEl lets a field clear a server error (e.g. a denied substance) once
+// the user edits or removes tags.
 const stackField = createTagInput("stack", {
   getOptions: ingredientOptions,
-  validate: ingredientValidator(document.getElementById("stack-error")),
+  validate: ingredientValidator(stackError),
+  errorEl: stackError,
 });
 const candidatesField = createTagInput("candidates", {
   getOptions: ingredientOptions,
-  validate: ingredientValidator(document.getElementById("candidates-error")),
+  validate: ingredientValidator(candidatesError),
+  errorEl: candidatesError,
 });
 const goalsField = createTagInput("goals", {
   getOptions: goalOptions,
-  validate: (goal) => {
-    if (isVagueGoal(goal)) {
-      goalsError.hidden = false;
-      goalsError.textContent = `"${goal}" looks vague. Try something specific and testable, e.g. "improve sleep quality" or "build muscle".`;
-    } else {
-      goalsError.hidden = true;
-    }
-  },
+  closed: true,
+  max: 5, // mirrors IntakeSchema in src/schema.ts
+  errorEl: goalsError,
+  noMatch: (text) => `"${text}" isn't on the list of supported goals. Pick a specific, testable goal from the dropdown.`,
 });
 
 // Blood work rows
@@ -466,8 +542,13 @@ function renderResults(evaluation) {
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   clearFormError();
-  goalsError.hidden = true;
   resultsEl.hidden = true;
+
+  if (goalsField.hasUnresolvedText()) {
+    showFormError("Pick each goal from the dropdown list, or clear the text you typed.");
+    goalsField.focus();
+    return;
+  }
 
   const goals = goalsField.getTags();
   if (goals.length === 0) {
@@ -518,9 +599,24 @@ form.addEventListener("submit", async (e) => {
 
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      if (body.error === "vague_goal") {
+      if (body.error === "denied_substance") {
+        // Shown under each field; the tag stays so the user can see what to remove.
+        for (const [field, errorEl] of [["stack", stackError], ["candidates", candidatesError]]) {
+          const denied = body.rejected.filter((r) => r.field === field);
+          if (denied.length === 0) continue;
+          errorEl.hidden = false;
+          errorEl.textContent = denied
+            .map((r) =>
+              r.kind === "prescription"
+                ? `"${r.value}" is a prescription medication (${r.substance}), not a supplement, so it can't be evaluated here. Don't start, stop, or change it without your prescriber. Remove it to continue.`
+                : `"${r.value}" is a controlled substance or drug (${r.substance}), not a supplement, so it can't be evaluated. Remove it to continue.`,
+            )
+            .join(" ");
+        }
+      } else if (body.error === "not_on_allowlist") {
+        // Only reachable if the goal list changed after this page loaded.
         goalsError.hidden = false;
-        goalsError.textContent = `"${body.goal}" is too vague. ${body.suggestion}`;
+        goalsError.textContent = `${body.message} Refresh the page to get the current list.`;
       } else {
         showFormError("Something about that submission wasn't valid. Please check your inputs and try again.");
       }

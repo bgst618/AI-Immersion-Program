@@ -80,7 +80,7 @@ export const KNOWN_INGREDIENTS: string[] = [
   "exogenous ketones", "beta-hydroxybutyrate", "bhb", "caffeine citrate", "theacrine", "dynamine", "paraxanthine",
   "synephrine", "bitter orange", "hordenine", "octopamine", "l-citrulline dl-malate", "nitrates", "sodium nitrate",
   "sodium citrate", "sodium phosphate", "glycerol", "tart cherry extract", "pomegranate extract", "urolithin a",
-  "ergothioneine", "creatinol-o-phosphate", "alpha-ketoglutarate", "calcium alpha-ketoglutarate", "akg", "metformin",
+  "ergothioneine", "creatinol-o-phosphate", "alpha-ketoglutarate", "calcium alpha-ketoglutarate", "akg",
   "ashwagandha extract", "black seed oil", "nigella sativa", "cbd", "cannabidiol",
   "hemp extract", "ginger extract", "garlic extract", "whey protein hydrolysate", "egg protein", "casein hydrolysate",
 ];
