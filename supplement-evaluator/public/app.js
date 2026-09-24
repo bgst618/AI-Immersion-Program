@@ -606,7 +606,11 @@ form.addEventListener("submit", async (e) => {
           if (denied.length === 0) continue;
           errorEl.hidden = false;
           errorEl.textContent = denied
-            .map((r) => `"${r.value}" is a controlled substance or drug (${r.substance}), not a supplement, so it can't be evaluated. Remove it to continue.`)
+            .map((r) =>
+              r.kind === "prescription"
+                ? `"${r.value}" is a prescription medication (${r.substance}), not a supplement, so it can't be evaluated here. Don't start, stop, or change it without your prescriber. Remove it to continue.`
+                : `"${r.value}" is a controlled substance or drug (${r.substance}), not a supplement, so it can't be evaluated. Remove it to continue.`,
+            )
             .join(" ");
         }
       } else if (body.error === "not_on_allowlist") {

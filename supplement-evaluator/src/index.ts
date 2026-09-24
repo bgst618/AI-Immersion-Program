@@ -30,10 +30,13 @@ async function handleEvaluate(request: Request, env: Env): Promise<Response> {
   if (!parsed.success) {
     const deniedItems = findDeniedItems(parsed.error);
     if (deniedItems.length > 0) {
+      const prescriptionNote = deniedItems.some((r) => r.kind === "prescription")
+        ? " Don't start, stop, or change a prescription medication without your prescriber."
+        : "";
       return json(
         {
           error: "denied_substance",
-          message: `Only supplements can be evaluated, not controlled substances or other drugs. Remove: ${quoteList(deniedItems)}.`,
+          message: `Only supplements can be evaluated, not controlled substances or prescription medications. Remove: ${quoteList(deniedItems)}.${prescriptionNote}`,
           rejected: deniedItems,
         },
         400,

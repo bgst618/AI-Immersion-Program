@@ -78,38 +78,50 @@ describe("POST /api/evaluate reaches the model for valid intake (control)", () =
 });
 
 describe("POST /api/evaluate item denylist", () => {
-  const denied: [string, string][] = [
-    ["cocaine", "cocaine"],
-    ["nicotine", "nicotine"],
-    ["meth", "methamphetamine"],
-    ["crystal meth", "methamphetamine"],
-    ["Adderall 20mg", "amphetamine"],
-    ["cocain", "cocaine"],
+  const denied: [string, string, string][] = [
+    ["cocaine", "cocaine", "controlled"],
+    ["nicotine", "nicotine", "controlled"],
+    ["meth", "methamphetamine", "controlled"],
+    ["crystal meth", "methamphetamine", "controlled"],
+    ["Adderall 20mg", "amphetamine", "controlled"],
+    ["cocain", "cocaine", "controlled"],
+    ["metformin", "metformin", "prescription"],
+    ["Metformin 500mg ER", "metformin", "prescription"],
+    ["Ozempic", "a GLP-1 medication", "prescription"],
+    ["atorvastatin", "a statin", "prescription"],
   ];
 
-  for (const [value, substance] of denied) {
+  for (const [value, substance, kind] of denied) {
     it(`rejects "${value}" in the stack with 400 before calling the model`, async () => {
       await expectRejectedBeforeModel({ ...validBody, stack: [value] }, "denied_substance", [
-        { field: "stack", value, substance },
+        { field: "stack", value, substance, kind },
       ]);
     });
 
     it(`rejects "${value}" as a candidate with 400 before calling the model`, async () => {
       await expectRejectedBeforeModel({ ...validBody, candidates: [value] }, "denied_substance", [
-        { field: "candidates", value, substance },
+        { field: "candidates", value, substance, kind },
       ]);
     });
   }
 
+  it("tells the user not to change a prescription without their prescriber", async () => {
+    const response = await evaluate({ ...validBody, stack: ["metformin"] });
+    const json = (await response.json()) as { message: string };
+    expect(json.message).toMatch(/without your prescriber/);
+    const controlled = await evaluate({ ...validBody, stack: ["cocaine"] });
+    expect(((await controlled.json()) as { message: string }).message).not.toMatch(/prescriber/);
+  });
+
   it("rejects the whole request when one item among valid ones is denied", async () => {
     await expectRejectedBeforeModel({ ...validBody, stack: ["fish oil", "nicotine gum", "multivitamin"] }, "denied_substance", [
-      { field: "stack", value: "nicotine gum", substance: "nicotine" },
+      { field: "stack", value: "nicotine gum", substance: "nicotine", kind: "controlled" },
     ]);
   });
 
   it("reports a denied item ahead of an off-list goal", async () => {
     await expectRejectedBeforeModel({ ...validBody, stack: ["meth"], goals: ["be smarter"] }, "denied_substance", [
-      { field: "stack", value: "meth", substance: "methamphetamine" },
+      { field: "stack", value: "meth", substance: "methamphetamine", kind: "controlled" },
     ]);
   });
 

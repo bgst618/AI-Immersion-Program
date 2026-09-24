@@ -27,6 +27,28 @@ describe("findDeniedSubstance", () => {
     for (const [input, name] of cases) expect(findDeniedSubstance(input)?.name, input).toBe(name);
   });
 
+  it("denies prescription-only medications as their own kind", () => {
+    const cases: [string, string][] = [
+      ["metformin", "metformin"],
+      ["Metformin ER 500mg", "metformin"],
+      ["metformn", "metformin"], // one edit; a transposed pair ("metfromin") counts as two
+      ["rapamycin", "rapamycin"],
+      ["Ozempic", "a GLP-1 medication"],
+      ["semaglutide", "a GLP-1 medication"],
+      ["rosuvastatin", "a statin"],
+      ["finasteride", "a 5-alpha-reductase inhibitor"],
+      ["Cialis", "a PDE5 inhibitor"],
+      ["clomid", "a hormone-modulating drug"],
+      ["levothyroxine", "a thyroid medication"],
+      ["warfarin", "a blood thinner"],
+      ["sertraline", "an antidepressant"],
+    ];
+    for (const [input, name] of cases) {
+      expect(findDeniedSubstance(input), input).toMatchObject({ name, kind: "prescription" });
+    }
+    expect(findDeniedSubstance("cocaine")?.kind).toBe("controlled");
+  });
+
   it("tolerates small typos, digit swaps, and spacing tricks on longer names", () => {
     for (const input of ["cocain", "c0caine", "nicotin", "methamphetamin", "adderal", "c o c a i n e", "crystalmeth"]) {
       expect(findDeniedSubstance(input), input).toBeDefined();
@@ -62,6 +84,10 @@ describe("findDeniedSubstance", () => {
       "turkesterone",
       "BPC-157",
       "zorbitrex-9",
+      "red yeast rice", // a supplement, even though it contains a natural statin
+      "saw palmetto",
+      "berberine",
+      "coumarin",
     ]) {
       expect(findDeniedSubstance(input), input).toBeUndefined();
     }

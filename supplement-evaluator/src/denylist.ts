@@ -1,7 +1,8 @@
-// Controlled substances and other drugs that aren't supplements. Unlike
-// hazards.ts (toxic compounds sold as supplements, which still get a forced
-// warning card), these are refused outright: IntakeSchema rejects the request
-// with 400 denied_substance before the model sees it. Every other name —
+// Drugs that aren't supplements: controlled substances, and prescription-only
+// medications that turn up in supplement stacks. Unlike hazards.ts (toxic
+// compounds sold as supplements, which still get a forced warning card), these
+// are refused outright: IntakeSchema rejects the request with 400
+// denied_substance before the model sees it. Every other name —
 // niche, misspelled, or made up — still goes to the model, flagged
 // [unrecognized] by items.ts when it isn't on the known-ingredient list.
 //
@@ -12,12 +13,18 @@
 // or known ingredient trips a match — run it after adding a term.
 import { withinEditDistance } from "./items";
 
+export type DeniedKind = "controlled" | "prescription";
+
 export interface DeniedSubstance {
   name: string; // shown in the error message
+  kind: DeniedKind; // picks the message the user sees
   terms: string[]; // lowercase generic names, abbreviations, and brand names
 }
 
-export const DENIED_SUBSTANCES: DeniedSubstance[] = [
+type Entry = Omit<DeniedSubstance, "kind">;
+
+// Controlled substances and recreational drugs.
+const CONTROLLED: Entry[] = [
   { name: "nicotine", terms: ["nicotine", "tobacco", "snus"] },
   { name: "cocaine", terms: ["cocaine"] },
   { name: "methamphetamine", terms: ["methamphetamine", "meth", "crystal meth", "desoxyn"] },
@@ -53,6 +60,45 @@ export const DENIED_SUBSTANCES: DeniedSubstance[] = [
       "testosterone enanthate",
     ],
   },
+];
+
+// Prescription-only medications. The safety concern is the controlled-
+// substance kind, not "weak evidence": rated like a supplement, a prescribed
+// drug could come back "Not needed for your goals". They're refused with
+// their own message — don't start, stop, or change it without your
+// prescriber. Not exhaustive: an unlisted drug still goes to the model.
+const PRESCRIPTION: Entry[] = [
+  { name: "metformin", terms: ["metformin", "glucophage"] },
+  { name: "rapamycin", terms: ["rapamycin", "sirolimus"] },
+  { name: "acarbose", terms: ["acarbose"] },
+  {
+    name: "a GLP-1 medication",
+    terms: ["semaglutide", "tirzepatide", "liraglutide", "ozempic", "wegovy", "rybelsus", "mounjaro", "zepbound", "saxenda"],
+  },
+  {
+    name: "a statin",
+    terms: ["statin", "atorvastatin", "rosuvastatin", "simvastatin", "pravastatin", "lipitor", "crestor", "zocor"],
+  },
+  { name: "a 5-alpha-reductase inhibitor", terms: ["finasteride", "dutasteride", "propecia", "proscar", "avodart"] },
+  { name: "a PDE5 inhibitor", terms: ["sildenafil", "tadalafil", "vardenafil", "viagra", "cialis"] },
+  {
+    name: "a hormone-modulating drug",
+    terms: ["clomiphene", "enclomiphene", "clomid", "tamoxifen", "nolvadex", "anastrozole", "arimidex", "letrozole", "hcg"],
+  },
+  { name: "a thyroid medication", terms: ["levothyroxine", "synthroid", "liothyronine", "cytomel"] },
+  {
+    name: "a blood thinner",
+    terms: ["warfarin", "apixaban", "eliquis", "rivaroxaban", "xarelto", "clopidogrel", "plavix"],
+  },
+  {
+    name: "an antidepressant",
+    terms: ["sertraline", "zoloft", "fluoxetine", "prozac", "escitalopram", "lexapro", "citalopram", "paroxetine", "bupropion", "wellbutrin"],
+  },
+];
+
+export const DENIED_SUBSTANCES: DeniedSubstance[] = [
+  ...CONTROLLED.map((entry) => ({ ...entry, kind: "controlled" as const })),
+  ...PRESCRIPTION.map((entry) => ({ ...entry, kind: "prescription" as const })),
 ];
 
 // Lowercase, and turn all punctuation into spaces: "Delta-8 THC" -> "delta 8 thc".

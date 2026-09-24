@@ -110,10 +110,11 @@ describe("item denylist", () => {
   });
 
   it("reports each denied item with its field and matched substance", () => {
-    const result = IntakeSchema.safeParse({ ...base, stack: ["fish oil", "cocaine"], candidates: ["Xanax"] });
+    const result = IntakeSchema.safeParse({ ...base, stack: ["fish oil", "cocaine"], candidates: ["Xanax", "metformin"] });
     expect(findDeniedItems(result.error!)).toEqual([
-      { field: "stack", value: "cocaine", substance: "cocaine" },
-      { field: "candidates", value: "Xanax", substance: "a benzodiazepine" },
+      { field: "stack", value: "cocaine", substance: "cocaine", kind: "controlled" },
+      { field: "candidates", value: "Xanax", substance: "a benzodiazepine", kind: "controlled" },
+      { field: "candidates", value: "metformin", substance: "metformin", kind: "prescription" },
     ]);
   });
 

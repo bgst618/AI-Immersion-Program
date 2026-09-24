@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { GOALS } from "./catalog";
-import { findDeniedSubstance } from "./denylist";
+import { findDeniedSubstance, type DeniedKind } from "./denylist";
 
 // Fixed dropdown of common blood work markers (Open Decision #3: dropdown, not free text).
 // Each marker carries its own unit so the client never has to submit one.
@@ -37,14 +37,18 @@ const trimmedNonEmpty = z
 
 // Stack and candidate names stay free text — niche, misspelled, and made-up
 // names still go to the model, flagged [unrecognized] by items.ts — except
-// controlled substances and other drugs on the denylist, rejected here.
+// controlled substances and prescription medications on the denylist,
+// rejected here.
 const ItemNameSchema = trimmedNonEmpty.superRefine((name, ctx) => {
   const denied = findDeniedSubstance(name);
   if (denied) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: `${denied.name} is a controlled substance or drug, not a supplement`,
-      params: { deniedSubstance: denied.name, value: name },
+      message:
+        denied.kind === "prescription"
+          ? `${denied.name} is a prescription medication, not a supplement`
+          : `${denied.name} is a controlled substance or drug, not a supplement`,
+      params: { deniedSubstance: denied.name, deniedKind: denied.kind, value: name },
     });
   }
 });
@@ -101,8 +105,9 @@ export type Budget = z.infer<typeof BudgetSchema>;
 export interface RejectedEntry {
   field: "stack" | "candidates" | "goals";
   value: string;
-  // Denied items only: which denylist entry matched.
+  // Denied items only: which denylist entry matched, and its kind.
   substance?: string;
+  kind?: DeniedKind;
 }
 
 // Stack/candidate names that matched the denylist, from a failed IntakeSchema parse.
@@ -112,7 +117,12 @@ export function findDeniedItems(error: z.ZodError): RejectedEntry[] {
     const field = issue.path[0];
     if (issue.code !== z.ZodIssueCode.custom || !issue.params?.deniedSubstance) continue;
     if (field === "stack" || field === "candidates") {
-      rejected.push({ field, value: issue.params.value, substance: issue.params.deniedSubstance });
+      rejected.push({
+        field,
+        value: issue.params.value,
+        substance: issue.params.deniedSubstance,
+        kind: issue.params.deniedKind,
+      });
     }
   }
   return rejected;
