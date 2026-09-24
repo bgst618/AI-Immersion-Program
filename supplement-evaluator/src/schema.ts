@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { GOALS } from "./catalog";
 
 // Fixed dropdown of common blood work markers (Open Decision #3: dropdown, not free text).
 // Each marker carries its own unit so the client never has to submit one.
@@ -33,6 +34,11 @@ const trimmedNonEmpty = z
   .max(200)
   .refine((text) => !CONTROL_CHARS.test(text), "must be a single line without control characters");
 
+// Goals must be exact entries from the curated goal list in catalog.json — the
+// same list the UI's dropdown offers — with no trimming or case folding. The
+// server never trusts that the dropdown was used.
+export const GoalSchema = z.enum(GOALS as [string, ...string[]]);
+
 export const BudgetSchema = z
   .object({
     amount: z.number().positive().max(100000),
@@ -53,7 +59,7 @@ export const BloodWorkEntrySchema = z
 export const IntakeSchema = z
   .object({
     stack: z.array(trimmedNonEmpty).max(15).default([]),
-    goals: z.array(trimmedNonEmpty).min(1).max(5),
+    goals: z.array(GoalSchema).min(1).max(5),
     budget: BudgetSchema,
     candidates: z.array(trimmedNonEmpty).max(5).default([]),
     bloodWork: z.array(BloodWorkEntrySchema).max(BLOOD_MARKERS.length).default([]),
@@ -71,6 +77,23 @@ export const IntakeSchema = z
 
 export type Intake = z.infer<typeof IntakeSchema>;
 export type Budget = z.infer<typeof BudgetSchema>;
+
+export interface RejectedEntry {
+  field: "stack" | "candidates" | "goals";
+  value: string;
+}
+
+// Goals that aren't on the goal list, from a failed IntakeSchema parse. Other
+// enum fields (blood work marker, budget period) stay ordinary invalid_request errors.
+export function findOffListGoals(error: z.ZodError): RejectedEntry[] {
+  const rejected: RejectedEntry[] = [];
+  for (const issue of error.issues) {
+    if (issue.code === z.ZodIssueCode.invalid_enum_value && issue.path[0] === "goals") {
+      rejected.push({ field: "goals", value: String(issue.received) });
+    }
+  }
+  return rejected;
+}
 
 const MONTHS_PER_PERIOD: Record<Budget["period"], number> = { week: 12 / 52, month: 1, year: 12 };
 

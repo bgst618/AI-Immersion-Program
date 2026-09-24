@@ -1,16 +1,18 @@
-import { ZodError } from "zod";
 import { assembleReports } from "./assemble";
 import { ClaudeCallError, ClaudeValidationError, evaluateWithClaude, resolveModel } from "./claude";
 import type { Env } from "./env";
-import { findFirstVagueGoal } from "./goals";
 import { compileItems } from "./items";
-import { IntakeSchema } from "./schema";
+import { IntakeSchema, findOffListGoals, type RejectedEntry } from "./schema";
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+function quoteList(rejected: RejectedEntry[]): string {
+  return rejected.map((r) => `"${r.value}" (${r.field})`).join(", ");
 }
 
 async function handleEvaluate(request: Request, env: Env): Promise<Response> {
@@ -21,19 +23,25 @@ async function handleEvaluate(request: Request, env: Env): Promise<Response> {
     return json({ error: "invalid_json" }, 400);
   }
 
-  // Step 1: validate intake. .strict() schemas reject unknown keys (e.g. "diet").
+  // Step 1: validate intake. .strict() schemas reject unknown keys (e.g. "diet");
+  // goals must be exact entries from the curated goal list. Nothing rejected
+  // here ever reaches the model.
   const parsed = IntakeSchema.safeParse(body);
   if (!parsed.success) {
-    const err = parsed.error as ZodError;
-    return json({ error: "invalid_request", details: err.issues }, 400);
+    const offListGoals = findOffListGoals(parsed.error);
+    if (offListGoals.length > 0) {
+      return json(
+        {
+          error: "not_on_allowlist",
+          message: `Only goals from the supported list are accepted. Not on the list: ${quoteList(offListGoals)}.`,
+          rejected: offListGoals,
+        },
+        400,
+      );
+    }
+    return json({ error: "invalid_request", details: parsed.error.issues }, 400);
   }
   const intake = parsed.data;
-
-  // Step 1: reject vague, untestable goals.
-  const vague = findFirstVagueGoal(intake.goals);
-  if (vague) {
-    return json({ error: "vague_goal", goal: vague.goal, suggestion: vague.suggestion }, 400);
-  }
 
   // Step 2: compile + flag items.
   const items = compileItems(intake.stack, intake.candidates);

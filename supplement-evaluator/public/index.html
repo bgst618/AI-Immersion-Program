@@ -29,13 +29,10 @@
 
       <section class="field-group">
         <label for="goals-input">Your goals <span class="required">*</span></label>
-        <p class="hint">
-          Specific and testable — start typing to pick from common goals, or write your own.
-          Vague goals like "be healthier" will be rejected.
-        </p>
-        <div class="tag-input" data-field="goals">
+        <p class="hint">Pick up to 5 specific, testable goals from the list.</p>
+        <div class="tag-input closed" data-field="goals">
           <div class="tags" id="goals-tags"></div>
-          <input type="text" id="goals-input" placeholder="e.g. improve sleep quality" autocomplete="off" />
+          <input type="text" id="goals-input" placeholder="Search goals, e.g. improve sleep quality" autocomplete="off" />
         </div>
         <p class="field-error" id="goals-error" role="alert" hidden></p>
       </section>
