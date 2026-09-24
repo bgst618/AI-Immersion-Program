@@ -123,6 +123,34 @@ describe("reasonNamesGoal", () => {
   });
 });
 
+describe("goalsAddressed on negative verdicts (red-team #8)", () => {
+  it("fails validation when a Remove or Don't still lists goalsAddressed", () => {
+    const current: CompiledItem[] = [{ id: "item_1", name: "BCAAs", status: "current" }];
+    const remove = item({ status: "current", verdict: "Remove", reason: "For your goal to build muscle, RCTs show no added benefit." });
+    const removeResult = validateStructure(current, ["build muscle"], { suggestions: [], items: [remove] });
+    expect(removeResult.ok).toBe(false);
+    expect(removeResult.message).toMatch(/goalsAddressed must be empty/);
+
+    const candidate: CompiledItem[] = [{ id: "item_1", name: "tribulus", status: "candidate" }];
+    const dont = item({ verdict: "Don't", reason: "For your goal to build muscle, trials show no effect." });
+    expect(validateStructure(candidate, ["build muscle"], { suggestions: [], items: [dont] }).ok).toBe(false);
+  });
+
+  it("passes a negative verdict with an empty goalsAddressed", () => {
+    const current: CompiledItem[] = [{ id: "item_1", name: "BCAAs", status: "current" }];
+    const remove = item({ status: "current", verdict: "Remove", goalsAddressed: [], reason: "For your goal to build muscle, RCTs show no added benefit." });
+    expect(validateStructure(current, ["build muscle"], { suggestions: [], items: [remove] }).ok).toBe(true);
+  });
+
+  it("clears goalsAddressed when a code override flips the verdict to Don't", () => {
+    const compiled: CompiledItem[] = [{ id: "item_1", name: "obscure compound", status: "candidate" }];
+    const output: ClaudeToolOutput = { suggestions: [], items: [item({ isMainstreamHumanTested: false, verdict: "Take" })] };
+    const report = assembleReports(compiled, output).items[0]!;
+    expect(report.verdict).toBe("Don't");
+    expect(report.goalsAddressed).toEqual([]);
+  });
+});
+
 describe("checkContentGuard", () => {
   it("passes clean output", () => {
     const output: ClaudeToolOutput = { suggestions: [], items: [item()] };

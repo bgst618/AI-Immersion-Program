@@ -183,6 +183,21 @@ describe("evaluateWithClaude", () => {
     expect(system.content).toContain('confidence="Insufficient evidence to rate"');
   });
 
+  it("retries once when a Don't verdict still lists goalsAddressed (red-team #8), then succeeds", async () => {
+    const contradictory = { ...validItem, verdict: "Don't", confidence: "Moderate", reason: "For your goal to build muscle, trials show no effect." };
+    (fetch as any)
+      .mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [contradictory] })))
+      .mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [{ ...contradictory, goalsAddressed: [] }] })));
+
+    const result = await evaluateWithClaude("fake-key", DEFAULT_MODEL, intake, items);
+    expect(result.items[0]!.goalsAddressed).toEqual([]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const [system] = JSON.parse((fetch as any).mock.calls[0][1].body).messages;
+    expect(system.content).toMatch(/EMPTY whenever the verdict is Remove or Don't/);
+    const retryMessages = JSON.parse((fetch as any).mock.calls[1][1].body).messages;
+    expect(retryMessages.at(-1).content).toMatch(/goalsAddressed must be empty/);
+  });
+
   it("accepts a short name the model renames, keyed by id (creatine + build muscle)", async () => {
     const shortItems: CompiledItem[] = [{ id: "item_1", name: "creatine", status: "current" }];
     const renamed = {

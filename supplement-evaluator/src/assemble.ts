@@ -22,6 +22,8 @@ const VALID_VERDICTS_BY_STATUS: Record<CompiledItem["status"], ReadonlyArray<Cla
   candidate: ["Take", "Don't"],
 };
 
+const NEGATIVE_VERDICTS: ReadonlySet<ClaudeItemOutput["verdict"]> = new Set(["Remove", "Don't"]);
+
 // Step 7 (part 1): structural checks the model can violate. Any failure here
 // should trigger the one allowed retry in claude.ts, not silent correction.
 export function validateStructure(
@@ -64,6 +66,14 @@ export function validateStructure(
       return {
         ok: false,
         message: `${label} (${expected.status}) has verdict "${out.verdict}"; must be one of ${allowedVerdicts.join(" or ")}.`,
+      };
+    }
+
+    // A Remove/Don't that still lists goals it "addresses" contradicts itself.
+    if (NEGATIVE_VERDICTS.has(out.verdict) && out.goalsAddressed.length > 0) {
+      return {
+        ok: false,
+        message: `${label} has verdict "${out.verdict}" but lists goalsAddressed ${JSON.stringify(out.goalsAddressed)}; goalsAddressed must be empty for Remove/Don't.`,
       };
     }
 
@@ -232,7 +242,10 @@ function applyOverrides(item: ClaudeItemOutput): ClaudeItemOutput {
     budgetFlag = false;
   }
 
-  return { ...item, verdict, confidence, budgetFlag };
+  // Keep the negative-verdict invariant (validateStructure) true after an override flips the verdict.
+  const goalsAddressed = NEGATIVE_VERDICTS.has(verdict) ? [] : item.goalsAddressed;
+
+  return { ...item, verdict, confidence, budgetFlag, goalsAddressed };
 }
 
 // Known hazards (hazards.ts) replace the model's report wholesale — verdict,
