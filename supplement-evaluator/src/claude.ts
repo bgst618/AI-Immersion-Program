@@ -20,6 +20,15 @@ const RETRYABLE_STATUSES = new Set([429, 500, 502, 503]);
 const MAX_TRANSIENT_RETRIES = 2;
 const TRANSIENT_BACKOFF_BASE_MS = 1000;
 
+// A stalled upstream call used to hang the Worker with no response at all
+// (Workers have no wall-clock limit while the client stays connected). Each
+// attempt is aborted after ATTEMPT_TIMEOUT_MS and retried once; the whole
+// evaluation, both validation turns included, never runs past
+// OVERALL_DEADLINE_MS. Waiting on fetch costs no Worker CPU time.
+export const ATTEMPT_TIMEOUT_MS = 45_000;
+export const OVERALL_DEADLINE_MS = 100_000;
+const MAX_TIMEOUT_RETRIES = 1;
+
 // meta/llama-3.1-70b-instruct was retired from NVIDIA's catalog; this has
 // reliable, well-documented function/tool calling support. Override without
 // a code change via the MODEL env var (Worker: wrangler.jsonc `vars.MODEL` /
@@ -202,14 +211,37 @@ export class ClaudeCallError extends Error {}
 // that simply omitted the forced tool call). Subclass so callers that only
 // know ClaudeCallError still map an exhausted retry to "upstream_error".
 export class TransientModelError extends ClaudeCallError {}
+// Also transient (so an exhausted retry is a clean 502 upstream_error), but
+// with its own, smaller retry budget: see MAX_TIMEOUT_RETRIES.
+export class ModelTimeoutError extends TransientModelError {}
 export class ClaudeValidationError extends Error {
   constructor(message: string) {
     super(message);
   }
 }
 
-async function callNvidia(apiKey: string, model: string, messages: OpenAIMessage[]): Promise<any> {
+// Runs `request` with an abort signal, rejecting with ModelTimeoutError after
+// `ms` whether or not the request honors the signal (covers a stalled body too).
+async function withTimeout<T>(ms: number, request: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      // Reject first so the race settles with the timeout, not fetch's AbortError.
+      reject(new ModelTimeoutError(`NVIDIA API call timed out after ${ms}ms`));
+      controller.abort();
+    }, ms);
+  });
+  try {
+    return await Promise.race([request(controller.signal), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function callNvidia(apiKey: string, model: string, messages: OpenAIMessage[], signal: AbortSignal): Promise<any> {
   const response = await fetch(NVIDIA_API_URL, {
+    signal,
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -259,15 +291,27 @@ function extractToolCall(apiResponse: any): ToolCall {
 }
 
 // One logical model turn: call + extract the tool call, retrying transient
-// failures with exponential backoff (1s, 2s). Independent of the one
-// validation retry in evaluateWithClaude, which only fires on bad content.
-async function requestToolCall(apiKey: string, model: string, messages: OpenAIMessage[]) {
+// failures with exponential backoff (1s, 2s) — timeouts at most once. Each
+// attempt gets ATTEMPT_TIMEOUT_MS or whatever is left before `deadline`.
+// Independent of the one validation retry in evaluateWithClaude.
+async function requestToolCall(apiKey: string, model: string, messages: OpenAIMessage[], deadline: number) {
+  let timeouts = 0;
   for (let attempt = 0; ; attempt++) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      throw new ModelTimeoutError(`Evaluation exceeded the ${OVERALL_DEADLINE_MS}ms overall deadline`);
+    }
     try {
-      return extractToolCall(await callNvidia(apiKey, model, messages));
+      const apiResponse = await withTimeout(Math.min(ATTEMPT_TIMEOUT_MS, remaining), (signal) =>
+        callNvidia(apiKey, model, messages, signal),
+      );
+      return extractToolCall(apiResponse);
     } catch (error) {
       if (!(error instanceof TransientModelError) || attempt >= MAX_TRANSIENT_RETRIES) throw error;
-      await new Promise((resolve) => setTimeout(resolve, TRANSIENT_BACKOFF_BASE_MS * 2 ** attempt));
+      if (error instanceof ModelTimeoutError && ++timeouts > MAX_TIMEOUT_RETRIES) throw error;
+      const backoff = TRANSIENT_BACKOFF_BASE_MS * 2 ** attempt;
+      if (Date.now() + backoff >= deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, backoff));
     }
   }
 }
@@ -312,7 +356,8 @@ export async function evaluateWithClaude(
     { role: "user", content: buildUserMessage(intake, items) },
   ];
 
-  const firstCall = await requestToolCall(apiKey, model, messages);
+  const deadline = Date.now() + OVERALL_DEADLINE_MS;
+  const firstCall = await requestToolCall(apiKey, model, messages, deadline);
   const firstResult = validate(items, intake, firstCall);
   if (firstResult.ok) return firstResult.data;
 
@@ -331,7 +376,7 @@ export async function evaluateWithClaude(
     },
   ];
 
-  const secondCall = await requestToolCall(apiKey, model, retryMessages);
+  const secondCall = await requestToolCall(apiKey, model, retryMessages, deadline);
   const secondResult = validate(items, intake, secondCall);
   if (secondResult.ok) return secondResult.data;
 

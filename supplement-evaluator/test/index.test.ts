@@ -79,3 +79,28 @@ describe("POST /api/evaluate with injected text (red-team #2)", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("POST /api/evaluate when the model API stalls (red-team #5)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("answers the exact red-team request (3 items, $1/year) with a 502 instead of hanging", async () => {
+    const pending = evaluate({
+      stack: ["fish oil", "vitamin D3"],
+      candidates: ["creatine monohydrate"],
+      goals: ["build muscle"],
+      budget: { amount: 1, period: "year", currency: "USD" },
+    });
+    await vi.runAllTimersAsync();
+    const res = await pending;
+    expect(res.status).toBe(502);
+    expect(((await res.json()) as any).error).toBe("upstream_error");
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+});
