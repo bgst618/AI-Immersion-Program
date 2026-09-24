@@ -9,6 +9,17 @@ describe("checkGoal", () => {
     expect(checkGoal("feel better").vague).toBe(true);
   });
 
+  it("rejects inflected and related forms, not just exact words (red-team #6)", () => {
+    for (const goal of ["get healthy", "healthy", "Be Healthy", "be well", "wellbeing", "improve well-being", "live longer", "living longer", "longevity", "extend lifespan", "generally feel good", "be better"]) {
+      expect(checkGoal(goal).vague, goal).toBe(true);
+    }
+  });
+
+  it("does not reject specific goals that merely contain a stem mid-word", () => {
+    expect(checkGoal("reduce swelling").vague).toBe(false);
+    expect(checkGoal("reduce knee swelling after runs").vague).toBe(false);
+  });
+
   it("accepts specific, testable goals", () => {
     expect(checkGoal("build muscle").vague).toBe(false);
     expect(checkGoal("improve sleep quality").vague).toBe(false);

@@ -7,8 +7,17 @@ const BLOOD_MARKERS = [
 ];
 
 // Mirrors the code-side check in src/goals.ts so users get instant feedback;
-// the server is still the source of truth.
-const VAGUE_PATTERNS = [/\bwellness\b/i, /\bhealthier\b/i, /\bhealth\b/i, /\bfeel better\b/i, /\boverall\b/i, /\bgeneral\b/i];
+// the server is still the source of truth. Word-start stems, not exact words.
+const VAGUE_PATTERNS = [
+  /\bhealth/i,
+  /\bwell/i,
+  /\boverall/i,
+  /\bgeneral/i,
+  /\bbetter/i,
+  /\blongevity/i,
+  /\blifespan/i,
+  /\bliv(e|ing) long/i,
+];
 
 function isVagueGoal(goal) {
   return VAGUE_PATTERNS.some((p) => p.test(goal));
