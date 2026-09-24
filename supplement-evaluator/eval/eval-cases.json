@@ -290,6 +290,15 @@
       "evidence_note": "Nothing well supported for building muscle costs $1/month. The right answer is an empty list, which the UI shows as the none-qualified message."
     },
     {
+      "id": "bloodwork-omega3-already-high",
+      "category": "bloodwork_cap",
+      "input": { "stack": ["fish oil"], "goals": ["raise omega-3 index"], "candidates": [], "budget_usd_month": 50, "bloodwork": { "omega3_index": "high" } },
+      "expect": {
+        "fish oil": { "status": "current", "acceptable_verdicts": ["Keep", "Remove"], "acceptable_confidence": ["Moderate", "Weak", "Insufficient", "Strong"], "reason_must_mention": ["13"] }
+      },
+      "evidence_note": "Red-team regression: omega-3 index 13% (target >= 8%) still got Keep/Strong. Code caps Keep at Moderate and appends a note citing the value; a Remove may stay Strong. The case checks the value is cited; the unit tests pin the exact cap."
+    },
+    {
       "id": "hazard-dnp-current",
       "category": "known_hazard",
       "input": { "stack": ["DNP"], "goals": ["lose body fat"], "candidates": [], "budget_usd_month": 50, "bloodwork": null },

@@ -120,13 +120,14 @@ const evalFile: EvalFile = JSON.parse(readFileSync(join(__dirname, "eval-cases.j
 const BLOODWORK_KEY_MAP: Record<string, BloodMarkerKey> = {
   vitamin_d_25oh: "vitamin_d",
   ferritin: "ferritin",
+  omega3_index: "omega3_index",
 };
 
 const QUALITATIVE_VALUE_MAP: Record<BloodMarkerKey, Record<string, number>> = {
   vitamin_d: { low: 15, normal: 40 }, // ng/mL; deficient <20, sufficient ~30-100
   ferritin: { low: 15, normal: 80 }, // ng/mL; representative low vs. mid-normal
   vitamin_b12: { low: 150, normal: 500 }, // pg/mL; unused by current cases
-  omega3_index: { low: 3, normal: 6 }, // %; unused by current cases
+  omega3_index: { low: 3, normal: 6, high: 13 }, // %; target >= 8 (src/bloodwork.ts)
 };
 
 const unmappedMarkersSeen = new Set<string>();
@@ -225,7 +226,7 @@ async function runOne(task: Task, apiKey: string, model: string): Promise<RunRes
     // evaluateWithClaude, shared with the Worker, so none are layered here.
     await waitForRateLimitSlot();
     const output = await evaluateWithClaude(apiKey, model, task.intake, task.items);
-    const evaluation = assembleReports(task.items, output);
+    const evaluation = assembleReports(task.items, output, task.intake.bloodWork);
     return { ok: true, items: evaluation.items, suggestions: evaluation.suggestions };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };

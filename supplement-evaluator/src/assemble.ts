@@ -1,4 +1,13 @@
-import type { Budget, ClaudeItemOutput, ClaudeToolOutput, CompiledItem, ItemReport, SuggestionReport } from "./schema";
+import { atTargetNote, markerAtTarget } from "./bloodwork";
+import type {
+  BloodWorkEntry,
+  Budget,
+  ClaudeItemOutput,
+  ClaudeToolOutput,
+  CompiledItem,
+  ItemReport,
+  SuggestionReport,
+} from "./schema";
 import { BRAND_PATTERN, findIngredient, normalizeTerm } from "./catalog";
 import { findHazard, type Hazard } from "./hazards";
 import { DISCLAIMER, EvaluationResponseSchema, KNOWN_HAZARD, monthlyBudget, type EvaluationResponse } from "./schema";
@@ -244,7 +253,25 @@ function hazardReport(compiled: CompiledItem, hazard: Hazard): ItemReport {
   };
 }
 
-export function assembleReports(compiledItems: CompiledItem[], output: ClaudeToolOutput): EvaluationResponse {
+// Blood work already at/above target (bloodwork.ts): a Keep/Take can't be
+// Strong — the user may not need more — and the reason must cite the value.
+// Remove/Don't is left alone ("Remove, Strong: already at 13%" is a sound answer).
+function applyBloodWorkCap(compiled: CompiledItem, item: ClaudeItemOutput, bloodWork: BloodWorkEntry[]): ClaudeItemOutput {
+  if (item.verdict !== "Keep" && item.verdict !== "Take") return item;
+  const atTarget = markerAtTarget(compiled.name, bloodWork);
+  if (!atTarget) return item;
+  return {
+    ...item,
+    confidence: item.confidence === "Strong" ? "Moderate" : item.confidence,
+    reason: `${item.reason.trimEnd()} ${atTargetNote(atTarget)}`,
+  };
+}
+
+export function assembleReports(
+  compiledItems: CompiledItem[],
+  output: ClaudeToolOutput,
+  bloodWork: BloodWorkEntry[] = [],
+): EvaluationResponse {
   const byId = new Map(output.items.map((item) => [item.id, item] as const));
 
   const items: ItemReport[] = compiledItems.map((compiled) => {
@@ -252,7 +279,7 @@ export function assembleReports(compiledItems: CompiledItem[], output: ClaudeToo
     if (hazard) return hazardReport(compiled, hazard);
 
     const raw = byId.get(compiled.id)!;
-    const corrected = applyOverrides(raw);
+    const corrected = applyBloodWorkCap(compiled, applyOverrides(raw), bloodWork);
     return {
       name: compiled.name,
       status: compiled.status,

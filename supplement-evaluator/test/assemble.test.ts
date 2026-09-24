@@ -328,6 +328,54 @@ describe("validateSuggestions", () => {
   });
 });
 
+describe("blood-work cap (marker already at/above target)", () => {
+  const goal = "raise omega-3 index";
+  const compiled: CompiledItem[] = [{ id: "item_1", name: "fish oil", status: "current" }];
+  const keepStrong = item({
+    status: "current",
+    verdict: "Keep",
+    confidence: "Strong",
+    goalsAddressed: [goal],
+    reason: "For your goal to raise omega-3 index, multiple RCTs show fish oil raises it; 13% is already above typical targets.",
+  });
+
+  it("caps Keep/Strong at Moderate and cites the value (red-team case: omega-3 index 13%)", () => {
+    const report = assembleReports(compiled, { suggestions: [], items: [keepStrong] }, [{ marker: "omega3_index", value: 13 }]).items[0]!;
+    expect(report.verdict).toBe("Keep");
+    expect(report.confidence).toBe("Moderate");
+    expect(report.reason).toMatch(/Omega-3 Index is 13%/);
+    expect(report.reason).toMatch(/target of 8%/);
+  });
+
+  it("caps a candidate Take/Strong found via an alias (cholecalciferol, vitamin D 45 ng/mL)", () => {
+    const candidate: CompiledItem[] = [{ id: "item_1", name: "cholecalciferol", status: "candidate" }];
+    const output: ClaudeToolOutput = { suggestions: [], items: [item({ goalsAddressed: [], reason: "For your goal to maintain bone density, strong RCT support." })] };
+    const report = assembleReports(candidate, output, [{ marker: "vitamin_d", value: 45 }]).items[0]!;
+    expect(report.confidence).toBe("Moderate");
+    expect(report.reason).toMatch(/45 ng\/mL/);
+  });
+
+  it("adds the note without raising a Weak confidence", () => {
+    const output: ClaudeToolOutput = { suggestions: [], items: [{ ...keepStrong, confidence: "Weak" }] };
+    const report = assembleReports(compiled, output, [{ marker: "omega3_index", value: 13 }]).items[0]!;
+    expect(report.confidence).toBe("Weak");
+    expect(report.reason).toMatch(/13%/);
+  });
+
+  it("leaves Strong alone when the value is below target", () => {
+    const report = assembleReports(compiled, { suggestions: [], items: [keepStrong] }, [{ marker: "omega3_index", value: 5 }]).items[0]!;
+    expect(report.confidence).toBe("Strong");
+    expect(report.reason).not.toMatch(/Note:/);
+  });
+
+  it("leaves a confident Remove alone (already replete is a sound reason to remove)", () => {
+    const remove = { ...keepStrong, verdict: "Remove" as const, goalsAddressed: [] };
+    const report = assembleReports(compiled, { suggestions: [], items: [remove] }, [{ marker: "omega3_index", value: 13 }]).items[0]!;
+    expect(report.confidence).toBe("Strong");
+    expect(report.reason).not.toMatch(/Note:/);
+  });
+});
+
 describe("known-hazard override", () => {
   const goals = ["lose body fat"];
 
