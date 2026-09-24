@@ -342,61 +342,97 @@ const POSITIVE_VERDICTS = new Set(["Keep", "Take"]);
 // since most removals mean "no support for your goals", not "harmful".
 const VERDICT_LABEL = { Remove: "Not needed for your goals" };
 
+// Plain web search for the ingredient name only — never a product or store.
+function ingredientSearchUrl(name) {
+  return `https://duckduckgo.com/?q=${encodeURIComponent(name)}`;
+}
+
+function buildBuyingNote(name) {
+  const note = document.createElement("p");
+  note.className = "buying-note";
+  note.append("Look for a USP Verified or NSF Certified product. ");
+  const link = document.createElement("a");
+  link.href = ingredientSearchUrl(name);
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = `Search the web for ${name}`;
+  note.appendChild(link);
+  return note;
+}
+
+function buildCard(item) {
+  const card = document.createElement("article");
+  card.className = item.status === "suggested" ? "card suggested" : "card";
+
+  const header = document.createElement("div");
+  header.className = "card-header";
+
+  const title = document.createElement("h3");
+  title.textContent = item.name;
+
+  const chip = document.createElement("span");
+  chip.className = "chip";
+  chip.textContent = item.status;
+
+  header.append(title, chip);
+
+  const verdict = document.createElement("p");
+  verdict.className = `verdict ${POSITIVE_VERDICTS.has(item.verdict) ? "positive" : "negative"}`;
+  verdict.textContent = VERDICT_LABEL[item.verdict] || item.verdict;
+
+  const badge = document.createElement("span");
+  const confidenceClass = CONFIDENCE_CLASS[item.confidence] || "Insufficient";
+  badge.className = `badge ${confidenceClass}`;
+  badge.textContent = item.confidence;
+
+  const badgeRow = [badge];
+  if (item.budgetFlag) {
+    const budgetBadge = document.createElement("span");
+    budgetBadge.className = "badge budget-flag";
+    budgetBadge.textContent = "Budget-limited";
+    badgeRow.push(budgetBadge);
+  }
+
+  const confidenceExplainer = document.createElement("p");
+  confidenceExplainer.className = "confidence-explainer";
+  confidenceExplainer.textContent =
+    CONFIDENCE_EXPLANATION[item.confidence] || CONFIDENCE_EXPLANATION["Insufficient evidence to rate"];
+
+  const reasonLabel = document.createElement("p");
+  reasonLabel.className = "label";
+  reasonLabel.textContent = "Why";
+  const reason = document.createElement("p");
+  reason.textContent = item.reason;
+
+  const mechanismLabel = document.createElement("p");
+  mechanismLabel.className = "label";
+  mechanismLabel.textContent = "How it works";
+  const mechanism = document.createElement("p");
+  mechanism.textContent = item.mechanism;
+
+  card.append(header, verdict, ...badgeRow, confidenceExplainer, reasonLabel, reason, mechanismLabel, mechanism);
+  if (item.verdict === "Take") card.appendChild(buildBuyingNote(item.name));
+  return card;
+}
+
 function renderResults(evaluation) {
   resultsCards.innerHTML = "";
+  for (const item of evaluation.items) resultsCards.appendChild(buildCard(item));
 
-  for (const item of evaluation.items) {
-    const card = document.createElement("article");
-    card.className = "card";
+  const suggestedHeading = document.createElement("h2");
+  suggestedHeading.className = "suggested-heading";
+  suggestedHeading.textContent = "Suggested additions";
+  resultsCards.appendChild(suggestedHeading);
 
-    const header = document.createElement("div");
-    header.className = "card-header";
-
-    const title = document.createElement("h3");
-    title.textContent = item.name;
-
-    const chip = document.createElement("span");
-    chip.className = "chip";
-    chip.textContent = item.status;
-
-    header.append(title, chip);
-
-    const verdict = document.createElement("p");
-    verdict.className = `verdict ${POSITIVE_VERDICTS.has(item.verdict) ? "positive" : "negative"}`;
-    verdict.textContent = VERDICT_LABEL[item.verdict] || item.verdict;
-
-    const badge = document.createElement("span");
-    const confidenceClass = CONFIDENCE_CLASS[item.confidence] || "Insufficient";
-    badge.className = `badge ${confidenceClass}`;
-    badge.textContent = item.confidence;
-
-    const badgeRow = [badge];
-    if (item.budgetFlag) {
-      const budgetBadge = document.createElement("span");
-      budgetBadge.className = "badge budget-flag";
-      budgetBadge.textContent = "Budget-limited";
-      badgeRow.push(budgetBadge);
-    }
-
-    const confidenceExplainer = document.createElement("p");
-    confidenceExplainer.className = "confidence-explainer";
-    confidenceExplainer.textContent =
-      CONFIDENCE_EXPLANATION[item.confidence] || CONFIDENCE_EXPLANATION["Insufficient evidence to rate"];
-
-    const reasonLabel = document.createElement("p");
-    reasonLabel.className = "label";
-    reasonLabel.textContent = "Why";
-    const reason = document.createElement("p");
-    reason.textContent = item.reason;
-
-    const mechanismLabel = document.createElement("p");
-    mechanismLabel.className = "label";
-    mechanismLabel.textContent = "How it works";
-    const mechanism = document.createElement("p");
-    mechanism.textContent = item.mechanism;
-
-    card.append(header, verdict, ...badgeRow, confidenceExplainer, reasonLabel, reason, mechanismLabel, mechanism);
-    resultsCards.appendChild(card);
+  const suggestions = evaluation.suggestions || [];
+  if (suggestions.length === 0) {
+    const none = document.createElement("p");
+    none.className = "no-suggestions";
+    none.textContent =
+      "No additional ingredients met the bar: Strong or Moderate evidence for your goals, within your budget.";
+    resultsCards.appendChild(none);
+  } else {
+    for (const suggestion of suggestions) resultsCards.appendChild(buildCard(suggestion));
   }
 
   resultsEl.hidden = false;

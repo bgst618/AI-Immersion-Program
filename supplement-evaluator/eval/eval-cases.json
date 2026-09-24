@@ -9,7 +9,8 @@
       "reason_must_mention": "Reason must reference at least one of these terms (case-insensitive) — checks the verdict is tied to the stated goal.",
       "reason_must_not_mention": "Global banned list applies to every case (see below), plus any per-case additions. A hit is a FAIL, not a log.",
       "consistency": "Verdict identical across all runs; confidence identical in >= 4 of 5 runs. Cases marked ambiguous: true are scored on consistency only — the exact answer is debatable, but flip-flopping is not acceptable.",
-      "pairs": "Cases sharing a pair_id must produce DIFFERENT verdicts from each other. If they match, that input (goal or bloodwork) is not actually driving the decision."
+      "pairs": "Cases sharing a pair_id must produce DIFFERENT verdicts from each other. If they match, that input (goal or bloodwork) is not actually driving the decision.",
+      "suggestions": "When expect_suggestions is present, on every run: suggestion count within min_count/max_count, every confidence in acceptable_confidence, every suggestion in the allowed list (relevance to the stated goal), none in must_not_include (things the user already takes), goalsAddressed non-empty and within the case's goals, and no banned phrases."
     },
     "global_reason_must_not_mention": [
       "your diet", "you eat", "if you eat", "dietary intake", "from food", "food sources",
@@ -255,6 +256,38 @@
         "creatine": { "status": "current", "acceptable_verdicts": ["Remove"], "acceptable_confidence": ["Insufficient", "Weak", "Moderate"], "reason_must_mention": ["muscle", "strength"] }
       },
       "evidence_note": "Not supported for sleep, but well supported for muscle/strength, which the user didn't list. The reason must point that out (prompt rule 12) without changing the verdict."
+    },
+    {
+      "id": "suggest-muscle-additions",
+      "category": "suggestions",
+      "input": { "stack": ["multivitamin"], "goals": ["build muscle"], "candidates": [], "budget_usd_month": 60, "bloodwork": null },
+      "expect": {},
+      "expect_suggestions": { "min_count": 1, "max_count": 3, "acceptable_confidence": ["Strong", "Moderate"], "allowed": ["creatine monohydrate", "whey protein", "casein protein"] },
+      "evidence_note": "Creatine (Strong) and whey (Moderate) clearly qualify within $60. Anything outside the allowlist (e.g. HMB, BCAAs, tribulus) is either weakly supported or irrelevant to building muscle."
+    },
+    {
+      "id": "suggest-skips-what-user-takes",
+      "category": "suggestions",
+      "input": { "stack": ["creatine"], "goals": ["build muscle"], "candidates": [], "budget_usd_month": 60, "bloodwork": null },
+      "expect": {},
+      "expect_suggestions": { "max_count": 3, "acceptable_confidence": ["Strong", "Moderate"], "allowed": ["whey protein", "casein protein"], "must_not_include": ["creatine monohydrate"] },
+      "evidence_note": "The user already takes creatine under its short name; suggesting \"creatine monohydrate\" would be a duplicate. Code rejects it by alias, and this checks the model isn't producing it in the first place."
+    },
+    {
+      "id": "suggest-sleep-additions",
+      "category": "suggestions",
+      "input": { "stack": ["fish oil"], "goals": ["improve sleep quality"], "candidates": [], "budget_usd_month": 30, "bloodwork": null },
+      "expect": {},
+      "expect_suggestions": { "max_count": 3, "acceptable_confidence": ["Strong", "Moderate"], "allowed": ["melatonin", "glycine", "L-theanine", "magnesium glycinate", "tart cherry", "valerian root", "ashwagandha"] },
+      "evidence_note": "Relevance check for a non-muscle goal: muscle or performance ingredients here would mean suggestions aren't tied to the stated goal. Weakly supported options (magnesium, valerian) may be in the allowlist but still fail on confidence."
+    },
+    {
+      "id": "suggest-none-tiny-budget",
+      "category": "suggestions",
+      "input": { "stack": ["multivitamin"], "goals": ["build muscle"], "candidates": [], "budget_usd_month": 1, "bloodwork": null },
+      "expect": {},
+      "expect_suggestions": { "max_count": 0 },
+      "evidence_note": "Nothing well supported for building muscle costs $1/month. The right answer is an empty list, which the UI shows as the none-qualified message."
     },
     {
       "id": "known-gap-synonym-dedupe",

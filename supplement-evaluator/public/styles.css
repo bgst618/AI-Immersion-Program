@@ -363,6 +363,31 @@ summary {
   color: var(--accent-strong);
 }
 
+.card.suggested {
+  border-style: dashed;
+  border-color: var(--accent);
+}
+
+.suggested-heading {
+  margin-top: 2rem;
+}
+
+.no-suggestions {
+  color: var(--muted);
+}
+
+.buying-note {
+  border-top: 1px solid var(--border);
+  padding-top: 0.75rem;
+  margin-top: 0.75rem;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+.buying-note a {
+  color: var(--accent-strong);
+}
+
 .confidence-explainer {
   display: block;
   color: var(--muted);

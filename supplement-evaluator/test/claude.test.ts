@@ -32,7 +32,7 @@ function nvidiaResponse(toolInput: unknown, toolCallId = "call_1") {
             {
               id: toolCallId,
               type: "function",
-              function: { name: "submit_evaluation", arguments: JSON.stringify(toolInput) },
+              function: { name: "submit_evaluation", arguments: JSON.stringify({ suggestions: [], ...(toolInput as object) }) },
             },
           ],
         },
@@ -131,6 +131,34 @@ describe("evaluateWithClaude", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     const prompt = JSON.parse((fetch as any).mock.calls[0][1].body).messages[1].content;
     expect(prompt).toContain("- [item_1] creatine (current)");
+  });
+
+  it("retries once when a suggestion breaks a rule (over budget), then succeeds", async () => {
+    const pricey = {
+      name: "whey protein",
+      goalsAddressed: ["build muscle"],
+      confidence: "Moderate",
+      evidenceType: "meta-analysis of RCTs",
+      estimatedMonthlyCost: 500,
+      reason: "For your goal to build muscle, adds modest lean-mass gains.",
+      mechanism: "Supplies leucine-rich protein.",
+    };
+    (fetch as any)
+      .mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [validItem], suggestions: [pricey] })))
+      .mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [validItem], suggestions: [{ ...pricey, estimatedMonthlyCost: 30 }] })));
+
+    const result = await evaluateWithClaude("fake-key", DEFAULT_MODEL, intake, items);
+    expect(result.suggestions[0]!.estimatedMonthlyCost).toBe(30);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const retryFeedback = JSON.parse((fetch as any).mock.calls[1][1].body).messages.at(-1).content;
+    expect(retryFeedback).toMatch(/budget/);
+  });
+
+  it("lists the allowed suggestion ingredients in the prompt", async () => {
+    (fetch as any).mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [validItem] })));
+    await evaluateWithClaude("fake-key", DEFAULT_MODEL, intake, items);
+    const prompt = JSON.parse((fetch as any).mock.calls[0][1].body).messages[1].content;
+    expect(prompt).toMatch(/Allowed suggestion list[\s\S]*whey protein/);
   });
 
   it("sends temperature 0", async () => {

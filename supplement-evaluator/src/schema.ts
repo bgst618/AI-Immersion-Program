@@ -60,6 +60,13 @@ export const IntakeSchema = z
   });
 
 export type Intake = z.infer<typeof IntakeSchema>;
+export type Budget = z.infer<typeof BudgetSchema>;
+
+const MONTHS_PER_PERIOD: Record<Budget["period"], number> = { week: 12 / 52, month: 1, year: 12 };
+
+export function monthlyBudget(budget: Budget): number {
+  return budget.amount / MONTHS_PER_PERIOD[budget.period];
+}
 export type BloodWorkEntry = z.infer<typeof BloodWorkEntrySchema>;
 
 export const ItemStatusSchema = z.enum(["current", "candidate"]);
@@ -95,13 +102,31 @@ export const ClaudeItemOutputSchema = z
   })
   .strict();
 
+export const SuggestionConfidenceSchema = z.enum(["Strong", "Moderate"]);
+
+export const ClaudeSuggestionOutputSchema = z
+  .object({
+    name: z.string().min(1),
+    goalsAddressed: z.array(z.string()).min(1),
+    confidence: SuggestionConfidenceSchema,
+    evidenceType: z.string().min(1).max(200),
+    estimatedMonthlyCost: z.number().finite().nonnegative(),
+    reason: z.string().min(1).max(1000),
+    mechanism: z.string().min(1).max(1000),
+  })
+  .strict();
+
+export const MAX_SUGGESTIONS = 3;
+
 export const ClaudeToolOutputSchema = z
   .object({
     items: z.array(ClaudeItemOutputSchema),
+    suggestions: z.array(ClaudeSuggestionOutputSchema).max(MAX_SUGGESTIONS),
   })
   .strict();
 
 export type ClaudeItemOutput = z.infer<typeof ClaudeItemOutputSchema>;
+export type ClaudeSuggestionOutput = z.infer<typeof ClaudeSuggestionOutputSchema>;
 export type ClaudeToolOutput = z.infer<typeof ClaudeToolOutputSchema>;
 
 // Final response shape returned to the browser.
@@ -118,8 +143,22 @@ export const ItemReportSchema = z.object({
 });
 export type ItemReport = z.infer<typeof ItemReportSchema>;
 
+export const SuggestionReportSchema = z.object({
+  name: z.string(),
+  status: z.literal("suggested"),
+  verdict: z.literal("Take"),
+  confidence: SuggestionConfidenceSchema,
+  goalsAddressed: z.array(z.string()),
+  evidenceType: z.string(),
+  estimatedMonthlyCost: z.number(),
+  reason: z.string(),
+  mechanism: z.string(),
+});
+export type SuggestionReport = z.infer<typeof SuggestionReportSchema>;
+
 export const EvaluationResponseSchema = z.object({
   items: z.array(ItemReportSchema),
+  suggestions: z.array(SuggestionReportSchema),
   disclaimer: z.string(),
 });
 export type EvaluationResponse = z.infer<typeof EvaluationResponseSchema>;

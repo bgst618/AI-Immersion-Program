@@ -1,6 +1,6 @@
-import type { ClaudeItemOutput, ClaudeToolOutput, CompiledItem, ItemReport } from "./schema";
-import { BRAND_PATTERN } from "./catalog";
-import { DISCLAIMER, EvaluationResponseSchema, type EvaluationResponse } from "./schema";
+import type { Budget, ClaudeItemOutput, ClaudeToolOutput, CompiledItem, ItemReport, SuggestionReport } from "./schema";
+import { BRAND_PATTERN, findIngredient, normalizeTerm } from "./catalog";
+import { DISCLAIMER, EvaluationResponseSchema, monthlyBudget, type EvaluationResponse } from "./schema";
 
 export interface StructureCheckResult {
   ok: boolean;
@@ -117,6 +117,55 @@ function checkGoalTieIn(
   return { ok: true };
 }
 
+// Suggestions must be catalog ingredients (mainstream, never a brand) that the
+// user isn't already taking or considering, tied to a stated goal, and
+// affordable in total. Confidence (Strong/Moderate) and count (<= 3) are
+// enforced by the zod schema. Failures trigger the retry like validateStructure.
+export function validateSuggestions(
+  compiledItems: CompiledItem[],
+  goals: string[],
+  budget: Budget,
+  output: ClaudeToolOutput,
+): StructureCheckResult {
+  const alreadyListed = new Set<string>();
+  for (const item of compiledItems) {
+    alreadyListed.add(normalizeTerm(item.name));
+    const known = findIngredient(item.name);
+    if (known) alreadyListed.add(normalizeTerm(known.name));
+  }
+
+  const seen = new Set<string>();
+  let totalCost = 0;
+  for (const suggestion of output.suggestions) {
+    const label = `Suggestion "${suggestion.name}"`;
+    const ingredient = findIngredient(suggestion.name);
+    if (!ingredient) {
+      return { ok: false, message: `${label} is not in the allowed ingredient list.` };
+    }
+    const key = normalizeTerm(ingredient.name);
+    if (alreadyListed.has(key)) {
+      return { ok: false, message: `${label} is already in the user's stack or candidates.` };
+    }
+    if (seen.has(key)) {
+      return { ok: false, message: `${label} is suggested more than once.` };
+    }
+    seen.add(key);
+
+    const goalCheck = checkGoalTieIn(label, suggestion.goalsAddressed, suggestion.reason, goals);
+    if (!goalCheck.ok) return goalCheck;
+    totalCost += suggestion.estimatedMonthlyCost;
+  }
+
+  const limit = monthlyBudget(budget);
+  if (totalCost > limit) {
+    return {
+      ok: false,
+      message: `Suggestions cost about ${totalCost.toFixed(2)} ${budget.currency}/month in total, over the user's ${limit.toFixed(2)} ${budget.currency}/month budget.`,
+    };
+  }
+  return { ok: true };
+}
+
 const DIET_PATTERN = /\bdiet(ary|s)?\b/i;
 // Brand names come from public/catalog.json (shared with the UI's brand warning).
 // Not exhaustive, but any hit is a hard failure, not a log line.
@@ -126,15 +175,19 @@ const DIET_PATTERN = /\bdiet(ary|s)?\b/i;
 // allowed retry in claude.ts instead of silently shipping the violation
 // (e.g. a live "...in individuals with adequate diet." reason).
 export function checkContentGuard(output: ClaudeToolOutput): StructureCheckResult {
-  for (const item of output.items) {
-    const text = `${item.reason} ${item.mechanism} ${item.evidenceType}`;
+  const entries = [
+    ...output.items.map((item) => ({ label: `Item ${item.id}`, fields: item })),
+    ...output.suggestions.map((s) => ({ label: `Suggestion "${s.name}"`, fields: s })),
+  ];
+  for (const { label, fields } of entries) {
+    const text = `${fields.reason} ${fields.mechanism} ${fields.evidenceType}`;
     if (DIET_PATTERN.test(text)) {
-      return { ok: false, message: `Item ${item.id} mentions "diet" in reason, mechanism, or evidenceType — not allowed.` };
+      return { ok: false, message: `${label} mentions "diet" in reason, mechanism, or evidenceType — not allowed.` };
     }
     if (BRAND_PATTERN.test(text)) {
       return {
         ok: false,
-        message: `Item ${item.id} mentions a brand/product name in reason, mechanism, or evidenceType — not allowed.`,
+        message: `${label} mentions a brand/product name in reason, mechanism, or evidenceType — not allowed.`,
       };
     }
   }
@@ -191,6 +244,18 @@ export function assembleReports(compiledItems: CompiledItem[], output: ClaudeToo
     };
   });
 
-  const evaluation: EvaluationResponse = { items, disclaimer: DISCLAIMER };
+  const suggestions: SuggestionReport[] = output.suggestions.map((s) => ({
+    name: findIngredient(s.name)?.name ?? s.name,
+    status: "suggested",
+    verdict: "Take",
+    confidence: s.confidence,
+    goalsAddressed: s.goalsAddressed,
+    evidenceType: s.evidenceType,
+    estimatedMonthlyCost: s.estimatedMonthlyCost,
+    reason: capitalizeFirstLetter(s.reason),
+    mechanism: s.mechanism,
+  }));
+
+  const evaluation: EvaluationResponse = { items, suggestions, disclaimer: DISCLAIMER };
   return EvaluationResponseSchema.parse(evaluation);
 }
