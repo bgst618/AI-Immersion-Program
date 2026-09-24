@@ -1,4 +1,5 @@
 import type { ClaudeItemOutput, ClaudeToolOutput, CompiledItem, ItemReport } from "./schema";
+import { BRAND_PATTERN } from "./catalog";
 import { DISCLAIMER, EvaluationResponseSchema, type EvaluationResponse } from "./schema";
 
 export interface StructureCheckResult {
@@ -117,10 +118,8 @@ function checkGoalTieIn(
 }
 
 const DIET_PATTERN = /\bdiet(ary|s)?\b/i;
-// Best-effort list of common supplement/vitamin brand names. Not exhaustive
-// (see PLAN.md step 6), but any hit here is a hard failure, not a log line.
-const BRAND_PATTERN =
-  /\b(optimum nutrition|gnc|now foods|nature made|thorne|life extension|garden of life|nordic naturals|kirkland|centrum|nutricost|bulk supplements|transparent labs)\b/i;
+// Brand names come from public/catalog.json (shared with the UI's brand warning).
+// Not exhaustive, but any hit is a hard failure, not a log line.
 
 // Rule 6: no diet/brand mentions in reason, mechanism, or evidenceType. This
 // is a structural check like validateStructure — a hit triggers the one
