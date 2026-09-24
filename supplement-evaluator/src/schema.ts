@@ -89,6 +89,8 @@ export const CompiledItemSchema = z.object({
   id: z.string(),
   name: z.string(),
   status: ItemStatusSchema,
+  // Set by items.ts when the name matches no known ingredient (red-team #4).
+  unrecognized: z.literal(true).optional(),
 });
 export type CompiledItem = z.infer<typeof CompiledItemSchema>;
 

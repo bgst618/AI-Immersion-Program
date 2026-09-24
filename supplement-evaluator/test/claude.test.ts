@@ -168,6 +168,18 @@ describe("evaluateWithClaude", () => {
     });
   });
 
+  it("marks unrecognized items in the prompt and tells the model not to invent evidence for them (red-team #4)", async () => {
+    const madeUp: CompiledItem[] = [{ id: "item_1", name: "zorbitrex-9", status: "candidate", unrecognized: true }];
+    (fetch as any).mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [validItem] })));
+
+    await evaluateWithClaude("fake-key", DEFAULT_MODEL, { ...intake, candidates: ["zorbitrex-9"] }, madeUp);
+    const [system, user] = JSON.parse((fetch as any).mock.calls[0][1].body).messages;
+    expect(user.content).toContain('- [item_1] "zorbitrex-9" (candidate) [unrecognized]');
+    expect(system.content).toMatch(/not confident an item name refers to a real, identifiable substance/);
+    expect(system.content).toContain('evidenceType="unrecognized ingredient"');
+    expect(system.content).toContain('confidence="Insufficient evidence to rate"');
+  });
+
   it("accepts a short name the model renames, keyed by id (creatine + build muscle)", async () => {
     const shortItems: CompiledItem[] = [{ id: "item_1", name: "creatine", status: "current" }];
     const renamed = {
