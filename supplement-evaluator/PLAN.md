@@ -18,7 +18,8 @@ A single-page website, served by one Cloudflare Worker, where a user enters thei
 ### Hard rules (from the problem statement — do not relax)
 
 - **No diet input anywhere.** No field, no prompt text, no hidden parameter. Diet mentions in model output fail validation and trigger the retry.
-- **No "overall wellness" goals.** Vague goals ("be healthier", "general health") are rejected with a prompt to make them specific and testable.
+- **No "overall wellness" goals.** Goals come only from the curated goal list in `catalog.json` (a dropdown in the UI, `z.enum` on the server); anything else, vague or not, is rejected `400 not_on_allowlist` before the model runs. A test runs every listed goal through the vague-goal patterns in `goals.ts`.
+- **Supplements only, not drugs.** Items are free text so any unfamiliar ingredient can be evaluated, except a short denylist of controlled substances and other drugs (`src/denylist.ts`: nicotine, cocaine, meth, …), rejected `400 denied_substance` before the model runs. Toxic "supplements" such as DNP are not denied: they get the forced Known-hazard card.
 - **No brand/product comparison or recommendation.** Ingredient level only. No product names, no per-product pricing. "Take" and suggested cards may say "Look for a USP Verified or NSF Certified product" and link a plain web search for the *ingredient name* — never a product.
 - **Human evidence only.** Niche, animal-only compounds are not recommended as candidates; if the user already takes one, it is rated `Insufficient evidence to rate`.
 - **Verdicts come from reasoning, not a lookup table.** The model does the evidence matching; code enforces structure.
@@ -31,7 +32,8 @@ Browser (static HTML/CSS/JS, autocomplete from /catalog.json)
    │  POST /api/evaluate  (JSON intake)
    ▼
 Cloudflare Worker (TypeScript)
-   ├─ Step 1  Validate intake (zod) + reject vague goals
+   ├─ Step 1  Validate intake (zod): goals from the goal list, items not on the drug denylist,
+   │          currency from the dropdown
    ├─ Step 2  Compile item list, flag current / candidate, assign ids (item_1, item_2, …)
    ├─ Steps 3–6  One model call, forced tool use → structured JSON (items by id + suggestions)
    │            transient errors (429/500/502/503, missing tool call) retried ×2 with backoff;
@@ -59,12 +61,13 @@ supplement-evaluator/
 │  ├─ index.html        # intake form + results area
 │  ├─ styles.css
 │  ├─ app.js            # form handling, autocomplete, fetch, render cards
-│  └─ catalog.json      # curated ingredients (+aliases), goals, brand names — shared with the Worker
+│  └─ catalog.json      # curated ingredients (+aliases), the goal allowlist, brand names — shared with the Worker
 ├─ src/
 │  ├─ index.ts          # router: GET / (assets), POST /api/evaluate
 │  ├─ schema.ts         # zod: Intake, ItemReport, SuggestionReport, EvaluationResponse
 │  ├─ catalog.ts        # typed access to public/catalog.json
-│  ├─ goals.ts          # vague-goal detection (step 1)
+│  ├─ goals.ts          # vague-goal patterns — guard the goal list's contents (test only)
+│  ├─ denylist.ts       # controlled substances / drugs rejected as items (step 1)
 │  ├─ items.ts          # compile + flag + id items (step 2)
 │  ├─ claude.ts         # prompt + tool definition + API call + retries (steps 3–6)
 │  └─ assemble.ts       # post-validation + final reports (step 7)
@@ -88,10 +91,10 @@ supplement-evaluator/
 
 Validation:
 
-- `stack`: 0–15 strings, trimmed, deduped (case-insensitive)
-- `goals`: 1–5 strings, each must pass the specificity check (§6)
-- `budget`: required
-- `candidates`: 0–5 strings, optional
+- `stack`: 0–15 strings, trimmed, deduped (synonyms merge on the catalog name); none may match the drug denylist
+- `goals`: 1–5 strings, each an exact entry from `catalog.json` `goals`
+- `budget`: required; `currency` one of `USD`, `EUR`, `GBP`, `CAD`
+- `candidates`: 0–5 strings, optional; same denylist rule as `stack`
 - `bloodWork`: optional; fixed dropdown marker (`vitamin_d`, `vitamin_b12`, `ferritin`, `omega3_index`) + number
 - `stack` + `candidates` combined must be ≥ 1 item
 - Reject any unknown keys (guarantees no diet field sneaks in)
@@ -132,7 +135,14 @@ Validation:
 
 `items[].name` is always the user's original input, restored from the item id — never the model's rewrite. `suggestions` may be empty; the UI then says none qualified.
 
-Errors: `400` with `{ "error": "vague_goal", "goal": "be healthier", "suggestion": "…" }`; `502` model output failed validation after retry, or the upstream API failed after transient retries.
+Errors (nothing rejected with `400` ever reaches the model):
+
+- `400` denied item — checked first:
+  `{ "error": "denied_substance", "message": "…", "rejected": [{ "field": "stack", "value": "crystal meth", "substance": "methamphetamine" }] }`
+- `400` off-list goal:
+  `{ "error": "not_on_allowlist", "message": "…", "rejected": [{ "field": "goals", "value": "be smarter" }] }`
+- `400` `{ "error": "invalid_request", "details": [...] }` for any other schema failure (unknown key, bad currency or budget, bad blood marker, control characters).
+- `502` model output failed validation after retry, or the upstream API failed after transient retries.
 
 ## 5. Model call (steps 3–6)
 
@@ -166,7 +176,8 @@ One call per evaluation (plus at most one validation retry). **Forced tool use**
 
 These run in code so the model can't break them. Everything below except capitalization triggers the validation retry:
 
-- **Vague-goal filter (step 1):** blocklist + pattern check. Reject with a suggestion.
+- **Goal allowlist (step 1):** `GoalSchema` is `z.enum` over `catalog.json` `goals`; `findOffListGoals` turns failures into `not_on_allowlist`. The vague-goal patterns are off the request path (they can't fire behind the allowlist) and instead guard the list's contents in tests.
+- **Drug denylist (step 1):** stack/candidate names are checked against `src/denylist.ts` (whole-word match, small typo tolerance on longer names, spacing ignored as a fallback); `findDeniedItems` turns hits into `denied_substance`. A test asserts no catalog, known-ingredient, or hazard name is denied.
 - **Id match:** every input id appears exactly once; no unknown ids. Names are *not* compared — the model may rename ("creatine" → "creatine monohydrate"); the user's original name is restored from the id.
 - **Verdict/status match:** current → `Keep|Remove`; candidate → `Take|Don't`.
 - **Goal tie-in:** `goalsAddressed` ⊆ user's goals; `reason` names a goal (word-stem match, so "building muscle" satisfies "build muscle").
@@ -176,8 +187,9 @@ These run in code so the model can't break them. Everything below except capital
 
 ## 7. Frontend
 
-- One page. Form: stack, goals, candidates (tag inputs), budget (amount + period), collapsible blood work rows. **No diet field.**
-- **Autocomplete** on ingredient fields (stack, candidates) from `catalog.json`: standard names with aliases ("vit D" → "vitamin D3"); typing an exact alias and pressing Enter inserts the standard name; free text still allowed. On goals: curated list of specific goals (free text still allowed, still vague-checked). Input that matches a known brand shows "Enter the ingredient instead (e.g. whey protein)." and isn't added.
+- One page. Form: stack, goals, candidates (tag inputs), budget (amount + period + currency dropdown), collapsible blood work rows. **No diet field.**
+- **Autocomplete** on ingredient fields (stack, candidates) from `catalog.json`: standard names with aliases ("vit D" → "vitamin D3"); typing an exact alias and pressing Enter inserts the standard name; free text still allowed. Input that matches a known brand shows "Enter the ingredient instead (e.g. whey protein)." and isn't added. A `denied_substance` response is shown under the field holding the item.
+- **Goals** are a closed multi-select over the same `catalog.json` list: focus opens the full list, typing filters it, only list entries can be added (max 5), and submit is blocked while unresolved text remains.
 - Results: one card per item. Header: name + chip (`current` / `candidate` / `suggested`). Big verdict (current-item `Remove` displays as "Not needed for your goals"), confidence badge + one-line explanation, reason, mechanism.
 - **Suggested** section after the item cards, same card format; if empty: "No additional ingredients met the bar."
 - Every `Take` card and every suggested card: "Look for a USP Verified or NSF Certified product" + a plain web search link for the ingredient name.
@@ -191,7 +203,7 @@ These run in code so the model can't break them. Everything below except capital
 
 ## 9. Test fixtures (acceptance)
 
-Unit tests (mocked model) cover schema, vague goals, compile, validation, overrides, retries. The golden eval set (`eval/eval-cases.json`, `npm run eval` / manual GitHub Action) runs against the real model, including:
+Unit tests (mocked model) cover schema, the goal allowlist, the drug denylist, compile, validation, overrides, retries. `test/intake-rejections.test.ts` drives the Worker's fetch handler and proves denied items (cocaine, nicotine, meth, typos) and off-list goals ("be smarter") get `400` without `evaluateWithClaude` or `fetch` ever being called, while niche and made-up items (turkesterone, BPC-157, "zorbitrex-9") still reach the model. Every golden eval fixture must pass `IntakeSchema` (unit-tested, and checked again by the eval preflight). The golden eval set (`eval/eval-cases.json`, `npm run eval` / manual GitHub Action) runs against the real model, including:
 
 - Short name `creatine` (current and candidate) — must not error; returned name stays `creatine`.
 - Suggestions: only Strong/Moderate; relevant to the stated goal (allowlist per case); never an ingredient already in the stack (alias-aware); none when the budget can't fit anything.
@@ -206,7 +218,8 @@ Unit tests (mocked model) cover schema, vague goals, compile, validation, overri
 
 ## 11. Current change round (implemented in this order)
 
-1. **Item ids (bug fix).** `creatine` + "build muscle" failed every time while `creatine monohydrate` worked: the exact-name check rejected the model's renamed item. Items get ids; the model echoes ids; names restored from ids. Also fix the goal-naming check to match word stems — the prompt's own example ("Building muscle: …") failed the old exact-substring check. Test + eval case for a short name.
-2. **Wording.** Current-item `Remove` → "Not needed for your goals" in the UI. Reasons point out goals the item *is* well supported for when the user didn't list them.
-3. **Autocomplete.** Curated `catalog.json` (ingredients + aliases, goals, brands); searchable dropdowns; brand warning; free text still allowed.
-4. **Suggested additions.** Up to 3 catalog ingredients (Strong/Moderate, relevant, in budget) as "Suggested" cards, or a none-qualified message. USP/NSF line + ingredient search link on Take and suggested cards. Eval cases for suggestion quality.
+Builds on the red-team fixes #1–#8 (hazards, injection handling, blood-work cap, unrecognized-ingredient flag, timeouts, vague-goal stems, synonym merge, negative-verdict goals).
+
+1. **Goal allowlist.** Goals must be exact entries from `catalog.json` `goals` (30 specific, testable goals, now including "raise omega-3 index", "raise vitamin D levels", "improve recovery time"); off-list goals get `400 not_on_allowlist`. The goals field is a closed dropdown. The vague-goal patterns move off the request path and guard the list's contents.
+2. **Drug denylist.** Items stay free text so unfamiliar ingredients can be evaluated (unknown names are flagged `[unrecognized]` by #4), but controlled substances and other drugs in `src/denylist.ts` get `400 denied_substance`.
+3. **Currency.** `budget.currency` is `z.enum(["USD", "EUR", "GBP", "CAD"])`; it used to be free text interpolated into the prompt.
