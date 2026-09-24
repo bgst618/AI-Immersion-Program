@@ -248,10 +248,10 @@ function applyOverrides(item: ClaudeItemOutput): ClaudeItemOutput {
   return { ...item, verdict, confidence, budgetFlag, goalsAddressed };
 }
 
-// Known hazards (hazards.ts) replace the model's report wholesale — verdict,
+// Known hazards (hazards.ts) get a report written entirely in code — verdict,
 // confidence, and every text field — so no model wording can frame a toxic
-// substance as an ordinary weak-evidence supplement. Runs last, after every
-// other rule, so nothing can soften it.
+// substance as an ordinary weak-evidence supplement. claude.ts doesn't send
+// them to the model; any model entry for one is ignored all the same.
 function hazardReport(compiled: CompiledItem, hazard: Hazard): ItemReport {
   return {
     name: compiled.name,

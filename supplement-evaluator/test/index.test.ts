@@ -80,6 +80,37 @@ describe("POST /api/evaluate with injected text (red-team #2)", () => {
   });
 });
 
+describe("POST /api/evaluate with a known hazard", () => {
+  beforeEach(() => vi.stubGlobal("fetch", vi.fn()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("returns the Known hazard report for a hazard-only request without calling the model", async () => {
+    const res = await evaluate({ stack: ["DNP"], goals: ["lose body fat"], budget });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]).toMatchObject({ name: "DNP", status: "current", verdict: "Remove", confidence: "Known hazard" });
+    expect(body.suggestions).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("evaluates the other items without the hazard and reports both", async () => {
+    (fetch as any).mockResolvedValueOnce(
+      toolCallResponse(JSON.stringify({ ...validOutput, items: [{ ...validOutput.items[0], id: "item_2" }] })),
+    );
+
+    const res = await evaluate({ stack: ["DNP"], candidates: ["magnesium glycinate"], goals: ["improve sleep quality"], budget });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.items.map((i: any) => [i.name, i.confidence])).toEqual([
+      ["DNP", "Known hazard"],
+      ["magnesium glycinate", "Weak"],
+    ]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse((fetch as any).mock.calls[0][1].body).messages[1].content).not.toContain("DNP");
+  });
+});
+
 describe("POST /api/evaluate when the model API stalls (red-team #5)", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));

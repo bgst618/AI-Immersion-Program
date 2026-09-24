@@ -1,5 +1,6 @@
 import { checkContentGuard, validateStructure, validateSuggestions } from "./assemble";
 import { INGREDIENTS } from "./catalog";
+import { findHazard } from "./hazards";
 import type { CompiledItem, Intake } from "./schema";
 import {
   ClaudeToolOutputSchema,
@@ -346,20 +347,28 @@ function validate(
 
 // Steps 3-6: one model call, forced tool/function calling, validated (schema
 // + structure) and retried once on failure per PLAN.md §5/§9 (fixture 7).
+//
+// Known hazards (hazards.ts) are never sent: assemble.ts replaces their report
+// wholesale anyway, and a DNP-only request used to 502 on a model timeout
+// instead of showing the warning. So a hazard-only request makes no model call
+// (and gets no suggestions), and a mixed one is evaluated without them.
 export async function evaluateWithClaude(
   apiKey: string,
   model: string,
   intake: Intake,
   items: CompiledItem[],
 ): Promise<ClaudeToolOutput> {
+  const modelItems = items.filter((item) => !findHazard(item.name));
+  if (modelItems.length === 0) return { items: [], suggestions: [] };
+
   const messages: OpenAIMessage[] = [
     { role: "system", content: buildSystemPrompt() },
-    { role: "user", content: buildUserMessage(intake, items) },
+    { role: "user", content: buildUserMessage(intake, modelItems) },
   ];
 
   const deadline = Date.now() + OVERALL_DEADLINE_MS;
   const firstCall = await requestToolCall(apiKey, model, messages, deadline);
-  const firstResult = validate(items, intake, firstCall);
+  const firstResult = validate(modelItems, intake, firstCall);
   if (firstResult.ok) return firstResult.data;
 
   // Retry once with the validation error appended, per spec.
@@ -378,7 +387,7 @@ export async function evaluateWithClaude(
   ];
 
   const secondCall = await requestToolCall(apiKey, model, retryMessages, deadline);
-  const secondResult = validate(items, intake, secondCall);
+  const secondResult = validate(modelItems, intake, secondCall);
   if (secondResult.ok) return secondResult.data;
 
   throw new ClaudeValidationError(secondResult.message);
