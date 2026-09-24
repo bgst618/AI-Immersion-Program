@@ -325,6 +325,7 @@ const CONFIDENCE_CLASS = {
   Moderate: "Moderate",
   Weak: "Weak",
   "Insufficient evidence to rate": "Insufficient",
+  "Known hazard": "Hazard",
 };
 
 // Confidence means how sure we are in the verdict, based on evidence
@@ -334,6 +335,7 @@ const CONFIDENCE_EXPLANATION = {
   Moderate: "Human trials point this way, but they're small, few, or industry-funded.",
   Weak: "Human evidence exists but is low quality or inconsistent.",
   "Insufficient evidence to rate": "Little or no human research exists on this ingredient for this goal.",
+  "Known hazard": "Documented toxicity and deaths in humans. This is a safety warning, not an evidence rating.",
 };
 
 const POSITIVE_VERDICTS = new Set(["Keep", "Take"]);
@@ -341,6 +343,9 @@ const POSITIVE_VERDICTS = new Set(["Keep", "Take"]);
 // The API keeps "Remove" as the verdict value; users see the softer label,
 // since most removals mean "no support for your goals", not "harmful".
 const VERDICT_LABEL = { Remove: "Not needed for your goals" };
+
+// A known hazard (src/hazards.ts) must never get the soft "Not needed" label.
+const HAZARD_VERDICT_LABEL = { Remove: "Stop taking: known hazard", "Don't": "Don't take: known hazard" };
 
 // Plain web search for the ingredient name only — never a product or store.
 function ingredientSearchUrl(name) {
@@ -378,7 +383,8 @@ function buildCard(item) {
 
   const verdict = document.createElement("p");
   verdict.className = `verdict ${POSITIVE_VERDICTS.has(item.verdict) ? "positive" : "negative"}`;
-  verdict.textContent = VERDICT_LABEL[item.verdict] || item.verdict;
+  const labels = item.confidence === "Known hazard" ? HAZARD_VERDICT_LABEL : VERDICT_LABEL;
+  verdict.textContent = labels[item.verdict] || item.verdict;
 
   const badge = document.createElement("span");
   const confidenceClass = CONFIDENCE_CLASS[item.confidence] || "Insufficient";

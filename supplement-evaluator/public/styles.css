@@ -358,6 +358,11 @@ summary {
   color: var(--insufficient);
 }
 
+.badge.Hazard {
+  background: rgba(255, 107, 107, 0.15);
+  color: var(--danger);
+}
+
 .badge.budget-flag {
   background: rgba(91, 140, 255, 0.15);
   color: var(--accent-strong);

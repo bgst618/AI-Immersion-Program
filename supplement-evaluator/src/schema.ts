@@ -85,6 +85,12 @@ export type CompiledItem = z.infer<typeof CompiledItemSchema>;
 export const ConfidenceSchema = z.enum(["Strong", "Moderate", "Weak", "Insufficient evidence to rate"]);
 export type Confidence = z.infer<typeof ConfidenceSchema>;
 
+// Set only by code (hazards.ts via assemble.ts), never accepted from the model:
+// a known-toxic substance isn't an evidence rating at all.
+export const KNOWN_HAZARD = "Known hazard";
+export const ReportConfidenceSchema = z.enum([...ConfidenceSchema.options, KNOWN_HAZARD]);
+export type ReportConfidence = z.infer<typeof ReportConfidenceSchema>;
+
 // Raw shape Claude's tool call must produce, before code-side enforcement (step 7 / assemble.ts).
 export const ClaudeItemOutputSchema = z
   .object({
@@ -134,7 +140,7 @@ export const ItemReportSchema = z.object({
   name: z.string(),
   status: ItemStatusSchema,
   verdict: z.enum(["Keep", "Remove", "Take", "Don't"]),
-  confidence: ConfidenceSchema,
+  confidence: ReportConfidenceSchema,
   goalsAddressed: z.array(z.string()),
   evidenceType: z.string(),
   budgetFlag: z.boolean(),

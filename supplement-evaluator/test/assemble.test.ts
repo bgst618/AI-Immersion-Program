@@ -328,6 +328,70 @@ describe("validateSuggestions", () => {
   });
 });
 
+describe("known-hazard override", () => {
+  const goals = ["lose body fat"];
+
+  it("forces Remove + Known hazard for a current DNP item the model rated like weak evidence", () => {
+    const compiled: CompiledItem[] = [{ id: "item_1", name: "DNP", status: "current" }];
+    const output: ClaudeToolOutput = {
+      suggestions: [],
+      items: [
+        item({
+          status: "current",
+          verdict: "Remove",
+          confidence: "Moderate",
+          goalsAddressed: goals,
+          evidenceType: "a few small human trials",
+          reason: "For your goal to lose body fat, evidence is limited and side effects are possible.",
+          mechanism: "Raises metabolic rate, increasing energy expenditure.",
+        }),
+      ],
+    };
+    const report = assembleReports(compiled, output).items[0]!;
+    expect(report.verdict).toBe("Remove");
+    expect(report.confidence).toBe("Known hazard");
+    expect(report.goalsAddressed).toEqual([]);
+    expect(report.budgetFlag).toBe(false);
+    expect(report.reason).toMatch(/known hazard/i);
+    expect(report.reason).toMatch(/deaths/i);
+    expect(report.reason).not.toMatch(/evidence is limited/i);
+    expect(report.mechanism).not.toBe("Raises metabolic rate, increasing energy expenditure.");
+    expect(report.evidenceType).toMatch(/toxicity/i);
+    expect(report.name).toBe("DNP");
+  });
+
+  it("forces Don't for a candidate even when the model said Take/Strong with budgetFlag", () => {
+    const compiled: CompiledItem[] = [{ id: "item_1", name: "2,4-dinitrophenol", status: "candidate" }];
+    const output: ClaudeToolOutput = {
+      suggestions: [],
+      items: [item({ verdict: "Take", confidence: "Strong", budgetFlag: true, goalsAddressed: [] })],
+    };
+    const report = assembleReports(compiled, output).items[0]!;
+    expect(report.verdict).toBe("Don't");
+    expect(report.confidence).toBe("Known hazard");
+    expect(report.budgetFlag).toBe(false);
+  });
+
+  it("leaves non-hazard items in the same request untouched", () => {
+    const compiled: CompiledItem[] = [
+      { id: "item_1", name: "creatine monohydrate", status: "candidate" },
+      { id: "item_2", name: "DNP", status: "candidate" },
+    ];
+    const output: ClaudeToolOutput = {
+      suggestions: [],
+      items: [item(), item({ id: "item_2", verdict: "Don't", confidence: "Weak", goalsAddressed: [] })],
+    };
+    const [creatine, dnp] = assembleReports(compiled, output).items;
+    expect(creatine!.confidence).toBe("Strong");
+    expect(dnp!.confidence).toBe("Known hazard");
+  });
+
+  it("the model itself cannot emit Known hazard (code-only value)", () => {
+    const parsed = ClaudeToolOutputSchema.safeParse({ suggestions: [], items: [item({ confidence: "Known hazard" as never })] });
+    expect(parsed.success).toBe(false);
+  });
+});
+
 describe("suggestion schema", () => {
   it("only allows Strong or Moderate confidence and at most 3 suggestions", () => {
     const base = { items: [item()] };

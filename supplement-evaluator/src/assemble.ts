@@ -1,6 +1,7 @@
 import type { Budget, ClaudeItemOutput, ClaudeToolOutput, CompiledItem, ItemReport, SuggestionReport } from "./schema";
 import { BRAND_PATTERN, findIngredient, normalizeTerm } from "./catalog";
-import { DISCLAIMER, EvaluationResponseSchema, monthlyBudget, type EvaluationResponse } from "./schema";
+import { findHazard, type Hazard } from "./hazards";
+import { DISCLAIMER, EvaluationResponseSchema, KNOWN_HAZARD, monthlyBudget, type EvaluationResponse } from "./schema";
 
 export interface StructureCheckResult {
   ok: boolean;
@@ -225,10 +226,31 @@ function applyOverrides(item: ClaudeItemOutput): ClaudeItemOutput {
   return { ...item, verdict, confidence, budgetFlag };
 }
 
+// Known hazards (hazards.ts) replace the model's report wholesale — verdict,
+// confidence, and every text field — so no model wording can frame a toxic
+// substance as an ordinary weak-evidence supplement. Runs last, after every
+// other rule, so nothing can soften it.
+function hazardReport(compiled: CompiledItem, hazard: Hazard): ItemReport {
+  return {
+    name: compiled.name,
+    status: compiled.status,
+    verdict: compiled.status === "current" ? "Remove" : "Don't",
+    confidence: KNOWN_HAZARD,
+    goalsAddressed: [],
+    evidenceType: "documented human toxicity, including deaths",
+    budgetFlag: false,
+    reason: `Known hazard, whatever your goals: ${hazard.name} is not a supplement. ${hazard.hazard} Do not take it.`,
+    mechanism: hazard.mechanism,
+  };
+}
+
 export function assembleReports(compiledItems: CompiledItem[], output: ClaudeToolOutput): EvaluationResponse {
   const byId = new Map(output.items.map((item) => [item.id, item] as const));
 
   const items: ItemReport[] = compiledItems.map((compiled) => {
+    const hazard = findHazard(compiled.name);
+    if (hazard) return hazardReport(compiled, hazard);
+
     const raw = byId.get(compiled.id)!;
     const corrected = applyOverrides(raw);
     return {
