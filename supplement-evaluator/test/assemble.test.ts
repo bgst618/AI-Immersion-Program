@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { assembleReports, checkContentGuard, validateStructure } from "../src/assemble";
+import { assembleReports, checkContentGuard, reasonNamesGoal, validateStructure } from "../src/assemble";
 import type { ClaudeItemOutput, ClaudeToolOutput, CompiledItem } from "../src/schema";
 
 function item(overrides: Partial<ClaudeItemOutput> = {}): ClaudeItemOutput {
   return {
-    name: "creatine monohydrate",
+    id: "item_1",
     status: "candidate",
     isMainstreamHumanTested: true,
     evidenceType: "multiple human RCTs and meta-analyses",
@@ -19,7 +19,7 @@ function item(overrides: Partial<ClaudeItemOutput> = {}): ClaudeItemOutput {
 }
 
 describe("validateStructure", () => {
-  const compiled: CompiledItem[] = [{ name: "creatine monohydrate", status: "candidate" }];
+  const compiled: CompiledItem[] = [{ id: "item_1", name: "creatine monohydrate", status: "candidate" }];
 
   it("passes for a well-formed matching output", () => {
     const output: ClaudeToolOutput = { items: [item()] };
@@ -27,12 +27,12 @@ describe("validateStructure", () => {
   });
 
   it("fails when item count doesn't match", () => {
-    const output: ClaudeToolOutput = { items: [item(), item({ name: "extra thing" })] };
+    const output: ClaudeToolOutput = { items: [item(), item({ id: "item_2" })] };
     expect(validateStructure(compiled, ["build muscle"], output).ok).toBe(false);
   });
 
   it("fails when a current item uses a candidate verdict (fixture 7)", () => {
-    const currentCompiled: CompiledItem[] = [{ name: "magnesium", status: "current" }];
+    const currentCompiled: CompiledItem[] = [{ id: "item_1", name: "magnesium", status: "current" }];
     const output: ClaudeToolOutput = {
       items: [item({ name: "magnesium", status: "current", verdict: "Take" })],
     };
@@ -44,8 +44,8 @@ describe("validateStructure", () => {
     expect(validateStructure(compiled, ["build muscle"], output).ok).toBe(false);
   });
 
-  it("fails when an item outside the input list is returned", () => {
-    const output: ClaudeToolOutput = { items: [item({ name: "unknown ingredient" })] };
+  it("fails when an id outside the input list is returned", () => {
+    const output: ClaudeToolOutput = { items: [item({ id: "item_99" })] };
     expect(validateStructure(compiled, ["build muscle"], output).ok).toBe(false);
   });
 
@@ -67,6 +67,41 @@ describe("validateStructure", () => {
       ],
     };
     expect(validateStructure(compiled, ["build muscle"], output).ok).toBe(true);
+  });
+});
+
+describe("renamed items (short names like \"creatine\")", () => {
+  const compiled: CompiledItem[] = [{ id: "item_1", name: "creatine", status: "current" }];
+  const renamed: ClaudeToolOutput = {
+    items: [
+      item({
+        name: "creatine monohydrate",
+        status: "current",
+        verdict: "Keep",
+        reason: "Building muscle: creatine monohydrate is backed by multiple independent RCTs.",
+      }),
+    ],
+  };
+
+  it("passes validation when the model renames the item but keeps its id", () => {
+    expect(validateStructure(compiled, ["build muscle"], renamed).ok).toBe(true);
+  });
+
+  it("restores the user's original name from the id", () => {
+    expect(assembleReports(compiled, renamed).items[0]!.name).toBe("creatine");
+  });
+});
+
+describe("reasonNamesGoal", () => {
+  it("accepts inflected forms of the goal's words", () => {
+    expect(reasonNamesGoal("Building muscle: strong evidence.", "build muscle")).toBe(true);
+    expect(reasonNamesGoal("It improves sleep quality in RCTs.", "improve sleep quality")).toBe(true);
+    expect(reasonNamesGoal("Lowers triglyceride levels.", "lower triglycerides")).toBe(true);
+  });
+
+  it("rejects a reason missing one of the goal's content words", () => {
+    expect(reasonNamesGoal("No evidence it improves sleep.", "improve sleep quality")).toBe(false);
+    expect(reasonNamesGoal("Strong evidence for strength gains.", "build muscle")).toBe(false);
   });
 });
 
@@ -102,7 +137,7 @@ describe("checkContentGuard", () => {
 
 describe("assembleReports", () => {
   it("forces Don't + Insufficient for a non-mainstream candidate", () => {
-    const compiled: CompiledItem[] = [{ name: "obscure compound", status: "candidate" }];
+    const compiled: CompiledItem[] = [{ id: "item_1", name: "obscure compound", status: "candidate" }];
     const output: ClaudeToolOutput = {
       items: [
         item({
@@ -119,7 +154,7 @@ describe("assembleReports", () => {
   });
 
   it("forces Remove for a current item with insufficient evidence", () => {
-    const compiled: CompiledItem[] = [{ name: "magnesium", status: "current" }];
+    const compiled: CompiledItem[] = [{ id: "item_1", name: "magnesium", status: "current" }];
     const output: ClaudeToolOutput = {
       items: [
         item({
@@ -135,7 +170,7 @@ describe("assembleReports", () => {
   });
 
   it("forces Don't for a candidate with insufficient evidence", () => {
-    const compiled: CompiledItem[] = [{ name: "creatine monohydrate", status: "candidate" }];
+    const compiled: CompiledItem[] = [{ id: "item_1", name: "creatine monohydrate", status: "candidate" }];
     const output: ClaudeToolOutput = {
       items: [item({ confidence: "Insufficient evidence to rate", verdict: "Take" })],
     };
@@ -144,7 +179,7 @@ describe("assembleReports", () => {
   });
 
   it("leaves a well-supported candidate untouched", () => {
-    const compiled: CompiledItem[] = [{ name: "creatine monohydrate", status: "candidate" }];
+    const compiled: CompiledItem[] = [{ id: "item_1", name: "creatine monohydrate", status: "candidate" }];
     const output: ClaudeToolOutput = { items: [item()] };
     const result = assembleReports(compiled, output);
     expect(result.items[0]!.verdict).toBe("Take");
@@ -152,14 +187,14 @@ describe("assembleReports", () => {
   });
 
   it("includes the disclaimer", () => {
-    const compiled: CompiledItem[] = [{ name: "creatine monohydrate", status: "candidate" }];
+    const compiled: CompiledItem[] = [{ id: "item_1", name: "creatine monohydrate", status: "candidate" }];
     const output: ClaudeToolOutput = { items: [item()] };
     const result = assembleReports(compiled, output);
     expect(result.disclaimer).toMatch(/not medical advice/i);
   });
 
   it("passes through budgetFlag=true when no override fires", () => {
-    const compiled: CompiledItem[] = [{ name: "magnesium glycinate", status: "candidate" }];
+    const compiled: CompiledItem[] = [{ id: "item_1", name: "magnesium glycinate", status: "candidate" }];
     const output: ClaudeToolOutput = {
       items: [
         item({
@@ -175,7 +210,7 @@ describe("assembleReports", () => {
   });
 
   it("clears budgetFlag when the niche-candidate override fires", () => {
-    const compiled: CompiledItem[] = [{ name: "obscure compound", status: "candidate" }];
+    const compiled: CompiledItem[] = [{ id: "item_1", name: "obscure compound", status: "candidate" }];
     const output: ClaudeToolOutput = {
       items: [
         item({
@@ -192,7 +227,7 @@ describe("assembleReports", () => {
   });
 
   it("clears budgetFlag when the insufficient-evidence override fires", () => {
-    const compiled: CompiledItem[] = [{ name: "creatine monohydrate", status: "candidate" }];
+    const compiled: CompiledItem[] = [{ id: "item_1", name: "creatine monohydrate", status: "candidate" }];
     const output: ClaudeToolOutput = {
       items: [item({ confidence: "Insufficient evidence to rate", verdict: "Take", budgetFlag: true })],
     };
@@ -201,7 +236,7 @@ describe("assembleReports", () => {
   });
 
   it("capitalizes the first letter of the reason", () => {
-    const compiled: CompiledItem[] = [{ name: "creatine monohydrate", status: "candidate" }];
+    const compiled: CompiledItem[] = [{ id: "item_1", name: "creatine monohydrate", status: "candidate" }];
     const output: ClaudeToolOutput = {
       items: [item({ reason: "supports build muscle per multiple human RCTs." })],
     };

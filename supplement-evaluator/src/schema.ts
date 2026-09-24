@@ -65,8 +65,11 @@ export type BloodWorkEntry = z.infer<typeof BloodWorkEntrySchema>;
 export const ItemStatusSchema = z.enum(["current", "candidate"]);
 export type ItemStatus = z.infer<typeof ItemStatusSchema>;
 
-// Step 2 output: the compiled, deduped item list handed to Claude.
+// Step 2 output: the compiled, deduped item list handed to the model. `id` is
+// the only key the model has to echo back; `name` is the user's original
+// input, restored onto the final report no matter how the model renames it.
 export const CompiledItemSchema = z.object({
+  id: z.string(),
   name: z.string(),
   status: ItemStatusSchema,
 });
@@ -78,7 +81,8 @@ export type Confidence = z.infer<typeof ConfidenceSchema>;
 // Raw shape Claude's tool call must produce, before code-side enforcement (step 7 / assemble.ts).
 export const ClaudeItemOutputSchema = z
   .object({
-    name: z.string().min(1),
+    id: z.string().min(1),
+    name: z.string().optional(),
     status: ItemStatusSchema,
     isMainstreamHumanTested: z.boolean(),
     evidenceType: z.string().min(1).max(200),

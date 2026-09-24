@@ -17,7 +17,7 @@ const intake: Intake = {
   bloodWork: [],
 };
 
-const items: CompiledItem[] = [{ name: "creatine monohydrate", status: "candidate" }];
+const items: CompiledItem[] = [{ id: "item_1", name: "creatine monohydrate", status: "candidate" }];
 
 // Shape of an NVIDIA (OpenAI-compatible Chat Completions) response with a
 // forced function call. `arguments` is a JSON string, not a parsed object.
@@ -46,7 +46,7 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 const validItem = {
-  name: "creatine monohydrate",
+  id: "item_1",
   status: "candidate",
   isMainstreamHumanTested: true,
   evidenceType: "multiple human RCTs and meta-analyses",
@@ -71,7 +71,7 @@ describe("evaluateWithClaude", () => {
     (fetch as any).mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [validItem] })));
 
     const result = await evaluateWithClaude("fake-key", DEFAULT_MODEL, intake, items);
-    expect(result.items[0]!.name).toBe("creatine monohydrate");
+    expect(result.items[0]!.id).toBe("item_1");
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -86,11 +86,10 @@ describe("evaluateWithClaude", () => {
   });
 
   it("retries once when a current item comes back with a candidate verdict (fixture 7), then fails for good", async () => {
-    const currentItems: CompiledItem[] = [{ name: "magnesium", status: "current" }];
+    const currentItems: CompiledItem[] = [{ id: "item_1", name: "magnesium", status: "current" }];
     const currentIntake: Intake = { ...intake, candidates: [] };
     const badOutput = {
       ...validItem,
-      name: "magnesium",
       status: "current",
       verdict: "Take", // invalid for a "current" item
     };
@@ -114,6 +113,24 @@ describe("evaluateWithClaude", () => {
       ClaudeValidationError,
     );
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("accepts a short name the model renames, keyed by id (creatine + build muscle)", async () => {
+    const shortItems: CompiledItem[] = [{ id: "item_1", name: "creatine", status: "current" }];
+    const renamed = {
+      ...validItem,
+      name: "Creatine monohydrate",
+      status: "current",
+      verdict: "Keep",
+      reason: "Building muscle: creatine monohydrate is backed by multiple independent RCTs.",
+    };
+    (fetch as any).mockResolvedValueOnce(jsonResponse(nvidiaResponse({ items: [renamed] })));
+
+    const result = await evaluateWithClaude("fake-key", DEFAULT_MODEL, { ...intake, stack: ["creatine"], candidates: [] }, shortItems);
+    expect(result.items[0]!.id).toBe("item_1");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const prompt = JSON.parse((fetch as any).mock.calls[0][1].body).messages[1].content;
+    expect(prompt).toContain("- [item_1] creatine (current)");
   });
 
   it("sends temperature 0", async () => {
@@ -157,7 +174,7 @@ describe("evaluateWithClaude", () => {
 
       const pending = evaluateWithClaude("fake-key", DEFAULT_MODEL, intake, items);
       await vi.runAllTimersAsync();
-      expect((await pending).items[0]!.name).toBe("creatine monohydrate");
+      expect((await pending).items[0]!.id).toBe("item_1");
       expect(fetch).toHaveBeenCalledTimes(2);
     });
 

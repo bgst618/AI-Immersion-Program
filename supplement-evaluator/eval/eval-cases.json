@@ -38,6 +38,15 @@
       "evidence_note": "Same as above, current-item path. Checks Keep/Take symmetry."
     },
     {
+      "id": "short-name-creatine-candidate",
+      "category": "short_name",
+      "input": { "stack": [], "goals": ["build muscle"], "candidates": ["creatine"], "budget_usd_month": 50, "bloodwork": null },
+      "expect": {
+        "creatine": { "status": "candidate", "acceptable_verdicts": ["Take"], "acceptable_confidence": ["Strong"], "reason_must_mention": ["muscle", "strength", "lean mass"] }
+      },
+      "evidence_note": "Regression: a short name the model tends to expand (\"creatine\" -> \"creatine monohydrate\") used to fail the exact-name check every time. The expect key doubles as the check that the user's original name is returned. strong-keep-creatine-muscle covers the same name on the current-item path."
+    },
+    {
       "id": "strong-take-caffeine-endurance",
       "category": "strong_positive",
       "input": { "stack": [], "goals": ["improve endurance performance"], "candidates": ["caffeine"], "budget_usd_month": 30, "bloodwork": null },

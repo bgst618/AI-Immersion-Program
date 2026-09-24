@@ -25,24 +25,26 @@ export function validateStructure(
     };
   }
 
-  const byKey = new Map(compiledItems.map((item) => [item.name.toLowerCase(), item] as const));
+  // Matched by id, never by name: the model may legitimately rename an item
+  // ("creatine" -> "creatine monohydrate"), which used to fail every time.
+  const byId = new Map(compiledItems.map((item) => [item.id, item] as const));
   const seen = new Set<string>();
 
   for (const out of output.items) {
-    const key = out.name.toLowerCase();
-    const expected = byKey.get(key);
+    const expected = byId.get(out.id);
     if (!expected) {
-      return { ok: false, message: `Item "${out.name}" was not in the input list.` };
+      return { ok: false, message: `Item id "${out.id}" was not in the input list.` };
     }
-    if (seen.has(key)) {
-      return { ok: false, message: `Item "${out.name}" was returned more than once.` };
+    if (seen.has(out.id)) {
+      return { ok: false, message: `Item id "${out.id}" was returned more than once.` };
     }
-    seen.add(key);
+    seen.add(out.id);
+    const label = `Item ${out.id} ("${expected.name}")`;
 
     if (out.status !== expected.status) {
       return {
         ok: false,
-        message: `Item "${out.name}" has status "${out.status}" but was submitted as "${expected.status}".`,
+        message: `${label} has status "${out.status}" but was submitted as "${expected.status}".`,
       };
     }
 
@@ -50,37 +52,67 @@ export function validateStructure(
     if (!allowedVerdicts.includes(out.verdict)) {
       return {
         ok: false,
-        message: `Item "${out.name}" (${expected.status}) has verdict "${out.verdict}"; must be one of ${allowedVerdicts.join(" or ")}.`,
+        message: `${label} (${expected.status}) has verdict "${out.verdict}"; must be one of ${allowedVerdicts.join(" or ")}.`,
       };
     }
 
-    const goalSet = new Set(goals);
-    for (const g of out.goalsAddressed) {
-      if (!goalSet.has(g)) {
-        return {
-          ok: false,
-          message: `Item "${out.name}" lists goalsAddressed "${g}" which is not one of the user's stated goals.`,
-        };
-      }
-    }
-
-    // Rule 11: the reason must explicitly name the goal it's judged against,
-    // not leave the reader to infer it. Fall back to the full goal list for
-    // Insufficient-evidence items, whose goalsAddressed is typically empty.
-    const goalsToName = out.goalsAddressed.length > 0 ? out.goalsAddressed : goals;
-    const reasonLower = out.reason.toLowerCase();
-    if (!goalsToName.some((g) => reasonLower.includes(g.toLowerCase()))) {
-      return {
-        ok: false,
-        message: `Item "${out.name}"'s reason does not explicitly name the goal it's judged against (expected one of: ${goalsToName.join(", ")}).`,
-      };
-    }
+    const goalCheck = checkGoalTieIn(label, out.goalsAddressed, out.reason, goals);
+    if (!goalCheck.ok) return goalCheck;
   }
 
   if (seen.size !== compiledItems.length) {
     return { ok: false, message: "Not every input item was covered exactly once." };
   }
 
+  return { ok: true };
+}
+
+const STOPWORDS = new Set(["a", "an", "and", "for", "in", "my", "of", "on", "or", "the", "to", "with", "your"]);
+
+function words(text: string): string[] {
+  return text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+}
+
+function stem(word: string): string {
+  return word.replace(/(ing|ed|es|s|e)$/, "") || word;
+}
+
+// A reason "names" a goal when every content word of the goal appears in it,
+// allowing inflection: "building muscle" names "build muscle", "improves
+// sleep quality" names "improve sleep quality".
+export function reasonNamesGoal(reason: string, goal: string): boolean {
+  const goalStems = words(goal)
+    .filter((w) => !STOPWORDS.has(w))
+    .map(stem);
+  if (goalStems.length === 0) return reason.toLowerCase().includes(goal.toLowerCase());
+  const reasonWords = words(reason);
+  return goalStems.every((s) => reasonWords.some((w) => w.startsWith(s)));
+}
+
+function checkGoalTieIn(
+  label: string,
+  goalsAddressed: string[],
+  reason: string,
+  goals: string[],
+): StructureCheckResult {
+  const goalSet = new Set(goals);
+  for (const g of goalsAddressed) {
+    if (!goalSet.has(g)) {
+      return {
+        ok: false,
+        message: `${label} lists goalsAddressed "${g}" which is not one of the user's stated goals.`,
+      };
+    }
+  }
+  // The reason must name the goal it's judged against. Fall back to the full
+  // goal list for Insufficient-evidence items, whose goalsAddressed is often empty.
+  const goalsToName = goalsAddressed.length > 0 ? goalsAddressed : goals;
+  if (!goalsToName.some((g) => reasonNamesGoal(reason, g))) {
+    return {
+      ok: false,
+      message: `${label}'s reason does not name the goal it's judged against (use the exact wording of one of: ${goalsToName.join(", ")}).`,
+    };
+  }
   return { ok: true };
 }
 
@@ -98,12 +130,12 @@ export function checkContentGuard(output: ClaudeToolOutput): StructureCheckResul
   for (const item of output.items) {
     const text = `${item.reason} ${item.mechanism} ${item.evidenceType}`;
     if (DIET_PATTERN.test(text)) {
-      return { ok: false, message: `Item "${item.name}" mentions "diet" in reason, mechanism, or evidenceType — not allowed.` };
+      return { ok: false, message: `Item ${item.id} mentions "diet" in reason, mechanism, or evidenceType — not allowed.` };
     }
     if (BRAND_PATTERN.test(text)) {
       return {
         ok: false,
-        message: `Item "${item.name}" mentions a brand/product name in reason, mechanism, or evidenceType — not allowed.`,
+        message: `Item ${item.id} mentions a brand/product name in reason, mechanism, or evidenceType — not allowed.`,
       };
     }
   }
@@ -142,10 +174,10 @@ function applyOverrides(item: ClaudeItemOutput): ClaudeItemOutput {
 }
 
 export function assembleReports(compiledItems: CompiledItem[], output: ClaudeToolOutput): EvaluationResponse {
-  const byKey = new Map(output.items.map((item) => [item.name.toLowerCase(), item] as const));
+  const byId = new Map(output.items.map((item) => [item.id, item] as const));
 
   const items: ItemReport[] = compiledItems.map((compiled) => {
-    const raw = byKey.get(compiled.name.toLowerCase())!;
+    const raw = byId.get(compiled.id)!;
     const corrected = applyOverrides(raw);
     return {
       name: compiled.name,

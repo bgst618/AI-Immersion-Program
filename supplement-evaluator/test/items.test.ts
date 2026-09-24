@@ -5,9 +5,9 @@ describe("compileItems", () => {
   it("flags stack items as current and candidates as candidate", () => {
     const items = compileItems(["multivitamin", "fish oil"], ["creatine monohydrate"]);
     expect(items).toEqual([
-      { name: "multivitamin", status: "current" },
-      { name: "fish oil", status: "current" },
-      { name: "creatine monohydrate", status: "candidate" },
+      { id: "item_1", name: "multivitamin", status: "current" },
+      { id: "item_2", name: "fish oil", status: "current" },
+      { id: "item_3", name: "creatine monohydrate", status: "candidate" },
     ]);
   });
 
@@ -18,7 +18,7 @@ describe("compileItems", () => {
 
   it("treats an item already in the stack as current, not candidate", () => {
     const items = compileItems(["creatine monohydrate"], ["Creatine Monohydrate"]);
-    expect(items).toEqual([{ name: "creatine monohydrate", status: "current" }]);
+    expect(items).toEqual([{ id: "item_1", name: "creatine monohydrate", status: "current" }]);
   });
 
   it("returns an empty list for empty input", () => {
