@@ -54,11 +54,16 @@ const ItemNameSchema = trimmedNonEmpty.superRefine((name, ctx) => {
 // server never trusts that the dropdown was used.
 export const GoalSchema = z.enum(GOALS as [string, ...string[]]);
 
+// The currencies the budget dropdown offers. The value goes into the model
+// prompt verbatim, so free text here would be an injection surface.
+// Keep in sync with #budget-currency in public/index.html.
+export const CURRENCIES = ["USD", "EUR", "GBP", "CAD"] as const;
+
 export const BudgetSchema = z
   .object({
     amount: z.number().positive().max(100000),
     period: z.enum(["week", "month", "year"]),
-    currency: z.string().trim().min(1).max(10),
+    currency: z.enum(CURRENCIES),
   })
   .strict();
 

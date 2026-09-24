@@ -51,6 +51,7 @@
         <label for="budget-amount">Budget <span class="required">*</span></label>
         <div class="budget-row">
           <input type="number" id="budget-amount" min="0" step="1" placeholder="Amount" required />
+          <!-- Keep in sync with CURRENCIES in src/schema.ts. -->
           <select id="budget-currency" aria-label="Currency">
             <option value="USD">USD</option>
             <option value="EUR">EUR</option>
